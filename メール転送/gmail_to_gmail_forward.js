@@ -2,20 +2,22 @@
  * Gmail -> Gmail forwarder for Google Apps Script.
  *
  * Edit only this config block first:
+ * - sourceAccountForSetup: the Gmail account where this script should run.
  * - destinationEmail: the Gmail address that receives forwarded messages.
  * - searchQueryParts: Gmail search conditions for the messages to forward.
  *
  * This file is independent from mail.js and does not call the Slack webhook.
  */
 const GMAIL_TO_GMAIL_FORWARD_CONFIG = {
-  destinationEmail: "TO_ADDRESS@gmail.com",
-  doneLabelName: "gmail_to_gmail_forwarded",
+  sourceAccountForSetup: "tsk.mons@gmail.com",
+  destinationEmail: "seemore.co.ltd@gmail.com",
+  doneLabelName: "forwarded_to_seemore",
   maxThreads: 50,
   searchQueryParts: [
     "in:inbox",
     "newer_than:14d",
     "-from:me",
-    "from:REPLACE_WITH_SENDER@example.com",
+    "subject:REPLACE_WITH_TARGET_SUBJECT",
     // Example:
     // 'subject:"invoice"',
     // 'has:attachment'
@@ -71,7 +73,7 @@ function getLatestMessageFromThread_(thread) {
 }
 
 function validateGmailToGmailForwardConfig_(config) {
-  if (!config.destinationEmail || config.destinationEmail === "TO_ADDRESS@gmail.com") {
+  if (!config.destinationEmail) {
     throw new Error("Set GMAIL_TO_GMAIL_FORWARD_CONFIG.destinationEmail before running.");
   }
 
@@ -80,8 +82,8 @@ function validateGmailToGmailForwardConfig_(config) {
   }
 
   const query = config.searchQueryParts.join(" ");
-  if (query.indexOf("REPLACE_WITH_SENDER") !== -1) {
-    throw new Error("Set a specific Gmail search condition before running.");
+  if (query.indexOf("REPLACE_WITH_TARGET_SUBJECT") !== -1) {
+    throw new Error("Set a specific Gmail search condition before running. Run this script in tsk.mons@gmail.com.");
   }
 
   if (!config.maxThreads || config.maxThreads < 1) {
