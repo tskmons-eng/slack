@@ -1,0 +1,1 @@
+"""SEEMORE Slack thread linker."""

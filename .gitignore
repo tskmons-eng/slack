@@ -1,3 +1,12 @@
 # Existing Slack script contains a live Slack webhook URL.
 メール転送/mail.js
 
+# SEEMORE Slack linker local/runtime files
+seemore-slack-linker/.env
+seemore-slack-linker/.venv/
+seemore-slack-linker/data/*.sqlite3
+seemore-slack-linker/data/*.sqlite3-*
+seemore-slack-linker/logs/*.log
+seemore-slack-linker/.pytest_cache/
+seemore-slack-linker/app/__pycache__/
+seemore-slack-linker/tests/__pycache__/
