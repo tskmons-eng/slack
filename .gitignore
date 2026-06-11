@@ -10,3 +10,7 @@ seemore-slack-linker/logs/*.log
 seemore-slack-linker/.pytest_cache/
 seemore-slack-linker/app/__pycache__/
 seemore-slack-linker/tests/__pycache__/
+
+# Local GAS deployment tooling
+seemore-slack-gas-linker/node_modules/
+seemore-slack-gas-linker/.clasprc.json

@@ -1,0 +1,16 @@
+{
+  "name": "seemore-slack-gas-linker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script deployment tooling for SEEMORE Slack vehicle thread linker.",
+  "scripts": {
+    "clasp": "node ./node_modules/@google/clasp/build/src/index.js",
+    "login": "node ./node_modules/@google/clasp/build/src/index.js login",
+    "create": "node ./node_modules/@google/clasp/build/src/index.js create --title \"SEEMORE Slack車案件リンク管理\" --type standalone",
+    "push": "node ./node_modules/@google/clasp/build/src/index.js push",
+    "open": "node ./node_modules/@google/clasp/build/src/index.js open-script"
+  },
+  "devDependencies": {
+    "@google/clasp": "3.3.0"
+  }
+}

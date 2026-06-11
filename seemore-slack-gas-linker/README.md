@@ -60,15 +60,18 @@ search:read
 10. `testSlackAuth()`、`testFindChannels()`、`testDryRunOnce()` を実行して確認する。
 11. `dry_run_logs` を確認し、問題なければ `settings` シートの `DRY_RUN` を `false` にする。
 
+Codexから `clasp` で配置する場合は、GASをWebアプリとしてデプロイし、`/exec?action=setup` を開いて `setup()` を実行できます。Webアプリ設定は `MYSELF` / `USER_DEPLOYING` のため、デプロイしたGoogleユーザー本人だけが実行できます。
+
 ## Slack App作成手順
 
 1. [Slack API Apps](https://api.slack.com/apps) を開きます。
 2. `Create New App` を選びます。
-3. `From scratch` を選び、任意のApp名とWorkspaceを指定します。
-4. `OAuth & Permissions` を開きます。
-5. `Bot Token Scopes` に必要Scopesを追加します。
-6. `Install to Workspace` を実行します。
-7. `Bot User OAuth Token` の `xoxb-...` を控えます。
+3. `From an app manifest` を選びます。
+4. Workspaceを選びます。
+5. このフォルダの `slack-app-manifest.yml` の内容を貼り付けます。
+6. 内容を確認してAppを作成します。
+7. `Install to Workspace` を実行します。
+8. `OAuth & Permissions` で `Bot User OAuth Token` の `xoxb-...` を控えます。
 
 ## Botをチャンネルへ招待
 
@@ -97,6 +100,8 @@ Slackの各対象チャンネルで以下を実行します。
 Apps Scriptの関数選択で `setup` を選び、実行します。
 
 初回だけGoogleの認証ポップアップが出ます。内容を確認し、許可してください。
+
+`clasp` デプロイ済みの場合は、WebアプリURLの末尾に `?action=setup` を付けて開いても同じセットアップが実行されます。
 
 `setup()` は以下を自動で行います。
 

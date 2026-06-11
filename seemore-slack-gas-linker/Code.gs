@@ -66,6 +66,27 @@ function setup() {
   Logger.log('settingsシートへSLACK_BOT_TOKENを入力してください。初期状態はDRY_RUN=trueです。');
 }
 
+function doGet(event) {
+  var action = event && event.parameter ? event.parameter.action : '';
+  if (action !== 'setup') {
+    return HtmlService.createHtmlOutput(
+      '<p>' + APP_NAME + '</p>' +
+      '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>'
+    );
+  }
+
+  var spreadsheet = createSheets();
+  saveSettings();
+  createDailyTrigger();
+  var html = [
+    '<h1>' + APP_NAME + '</h1>',
+    '<p>setup() が完了しました。</p>',
+    '<p><a target="_blank" href="' + spreadsheet.getUrl() + '">設定スプレッドシートを開く</a></p>',
+    '<p>settingsシートへSLACK_BOT_TOKENを入力してください。初期状態はDRY_RUN=trueです。</p>'
+  ].join('');
+  return HtmlService.createHtmlOutput(html);
+}
+
 function main() {
   var settings = getSettings();
   return runWithMode_(settings.dryRun, null);
