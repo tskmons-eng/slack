@@ -68,21 +68,32 @@ function setup() {
 
 function doGet(event) {
   var action = event && event.parameter ? event.parameter.action : '';
+  if (action === 'status') {
+    return ContentService
+      .createTextOutput(JSON.stringify(getSetupStatus_(), null, 2))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   if (action !== 'setup') {
     return HtmlService.createHtmlOutput(
       '<p>' + APP_NAME + '</p>' +
-      '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>'
+      '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
+      '<p>状態確認は <code>?action=status</code> です。</p>'
     );
   }
 
   var spreadsheet = createSheets();
   saveSettings();
   createDailyTrigger();
+  var status = getSetupStatus_();
   var html = [
     '<h1>' + APP_NAME + '</h1>',
     '<p>setup() が完了しました。</p>',
     '<p><a target="_blank" href="' + spreadsheet.getUrl() + '">設定スプレッドシートを開く</a></p>',
-    '<p>settingsシートへSLACK_BOT_TOKENを入力してください。初期状態はDRY_RUN=trueです。</p>'
+    '<p>settingsシートへSLACK_BOT_TOKENを入力してください。初期状態はDRY_RUN=trueです。</p>',
+    '<pre>' + JSON.stringify(status, null, 2).replace(/[<>&]/g, function(char) {
+      return {'<': '&lt;', '>': '&gt;', '&': '&amp;'}[char];
+    }) + '</pre>'
   ].join('');
   return HtmlService.createHtmlOutput(html);
 }
@@ -102,6 +113,58 @@ function runProduction() {
     throw new Error('本番投稿するにはsettingsシートのDRY_RUNをfalseに変更してください。');
   }
   return runWithMode_(false, null);
+}
+
+function getSetupStatus_() {
+  var status = {
+    checked_at: nowIso_(),
+    spreadsheet_name: SPREADSHEET_NAME,
+    spreadsheet_found: false,
+    spreadsheet_id: '',
+    spreadsheet_url: '',
+    sheets: {},
+    settings: {
+      has_slack_bot_token: false,
+      dry_run: '',
+      parent_channel_name: '',
+      child_channel_names: '',
+      lookback_days: ''
+    },
+    main_daily_trigger_found: false,
+    main_trigger_count: 0
+  };
+
+  var spreadsheet = findExistingSpreadsheet_();
+  if (spreadsheet) {
+    status.spreadsheet_found = true;
+    status.spreadsheet_id = spreadsheet.getId();
+    status.spreadsheet_url = spreadsheet.getUrl();
+    Object.keys(SHEET_HEADERS).forEach(function(sheetName) {
+      var sheet = spreadsheet.getSheetByName(sheetName);
+      status.sheets[sheetName] = {
+        exists: Boolean(sheet),
+        header_ok: sheet ? headerMatches_(sheet, SHEET_HEADERS[sheetName]) : false
+      };
+    });
+
+    var settingsSheet = spreadsheet.getSheetByName('settings');
+    if (settingsSheet) {
+      var settings = readSettingsMap_(settingsSheet);
+      status.settings.has_slack_bot_token = Boolean(stringValue_(settings.SLACK_BOT_TOKEN));
+      status.settings.dry_run = stringValue_(settingOrDefault_(settings, 'DRY_RUN'));
+      status.settings.parent_channel_name = stringValue_(settingOrDefault_(settings, 'PARENT_CHANNEL_NAME'));
+      status.settings.child_channel_names = stringValue_(settingOrDefault_(settings, 'CHILD_CHANNEL_NAMES'));
+      status.settings.lookback_days = stringValue_(settingOrDefault_(settings, 'LOOKBACK_DAYS'));
+    }
+  }
+
+  var triggers = ScriptApp.getProjectTriggers().filter(function(trigger) {
+    return trigger.getHandlerFunction() === 'main';
+  });
+  status.main_trigger_count = triggers.length;
+  status.main_daily_trigger_found = triggers.length > 0;
+
+  return status;
 }
 
 function createSheets() {
@@ -863,6 +926,27 @@ function getOrCreateSpreadsheet_() {
   return spreadsheet;
 }
 
+function findExistingSpreadsheet_() {
+  var properties = PropertiesService.getScriptProperties();
+  var spreadsheetId = properties.getProperty(SPREADSHEET_ID_PROPERTY);
+  if (spreadsheetId) {
+    try {
+      return SpreadsheetApp.openById(spreadsheetId);
+    } catch (error) {
+      properties.deleteProperty(SPREADSHEET_ID_PROPERTY);
+    }
+  }
+
+  var files = DriveApp.getFilesByName(SPREADSHEET_NAME);
+  if (files.hasNext()) {
+    var spreadsheet = SpreadsheetApp.openById(files.next().getId());
+    properties.setProperty(SPREADSHEET_ID_PROPERTY, spreadsheet.getId());
+    return spreadsheet;
+  }
+
+  return null;
+}
+
 function ensureHeader_(sheet, headers) {
   var range = sheet.getRange(1, 1, 1, headers.length);
   var current = range.getValues()[0];
@@ -877,6 +961,13 @@ function ensureHeader_(sheet, headers) {
   if (needsHeader) {
     range.setValues([headers]);
   }
+}
+
+function headerMatches_(sheet, headers) {
+  var current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  return headers.every(function(header, index) {
+    return current[index] === header;
+  });
 }
 
 function seedDefaultSettings_(sheet) {

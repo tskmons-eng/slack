@@ -103,6 +103,8 @@ Apps Scriptの関数選択で `setup` を選び、実行します。
 
 `clasp` デプロイ済みの場合は、WebアプリURLの末尾に `?action=setup` を付けて開いても同じセットアップが実行されます。
 
+セットアップ後の状態確認は、同じWebアプリURLの末尾を `?action=status` にして開きます。スプレッドシート、シートヘッダー、`settings` 初期値、`main()` トリガー有無をJSONで確認できます。
+
 `setup()` は以下を自動で行います。
 
 - スプレッドシート `SEEMORE_Slack車案件リンク管理` の作成

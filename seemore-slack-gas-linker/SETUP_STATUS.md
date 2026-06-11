@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-11 22:43 JST
+Last updated: 2026-06-11 22:50 JST
 
 ## Completed
 
@@ -10,18 +10,22 @@ Last updated: 2026-06-11 22:43 JST
 - `Code.gs` and `appsscript.json` were pushed to Apps Script.
 - Versioned deployments were created.
 - A self-only web setup endpoint was deployed.
+- The self-only web setup endpoint was updated to version 4 with `?action=status`.
 - Slack App manifest was prepared at `slack-app-manifest.yml`.
 
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ`
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 4
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
+- Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 
 ## Waiting On User Authorization
 
 Chrome is currently showing `Authorization needed`.
+
+The status URL also returns the Google `Authorization needed` page until the user grants the script permissions.
 
 User action required:
 
