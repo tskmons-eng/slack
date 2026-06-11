@@ -13,6 +13,8 @@ oauth_config:
       - channels:history
       - groups:read
       - groups:history
+      - reactions:read
+      - files:read
       - chat:write
 settings:
   org_deploy_enabled: false

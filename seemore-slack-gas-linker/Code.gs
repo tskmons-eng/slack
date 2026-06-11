@@ -2,6 +2,8 @@ var APP_NAME = 'SEEMORE Slack車案件リンク管理';
 var SPREADSHEET_NAME = 'SEEMORE_Slack車案件リンク管理';
 var SPREADSHEET_ID_PROPERTY = 'SEEMORE_SLACK_LINKS_SPREADSHEET_ID';
 var SLACK_TOKEN_PROPERTY = 'SLACK_BOT_TOKEN';
+var SCHEDULED_HANDLER_FUNCTION = 'scheduledMain';
+var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
@@ -9,7 +11,15 @@ var DEFAULT_SETTINGS = {
   PARENT_CHANNEL_NAME: '依頼_車案件',
   CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
   LOOKBACK_DAYS: '60',
-  DRY_RUN: 'true'
+  DRY_RUN: 'true',
+  MAIN_TRIGGER_HOURS: '3,13,20',
+  INVOICE_FORWARD_ENABLED: 'true',
+  INVOICE_SOURCE_CHANNEL_NAME: '依頼＿ALL',
+  INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
+  INVOICE_REACTION_NAME: 'rocket',
+  INVOICE_LOOKBACK_DAYS: '7',
+  INVOICE_HISTORY_LIMIT: '50',
+  INVOICE_FORWARD_DRY_RUN: 'false'
 };
 
 var SHEET_HEADERS = {
@@ -51,6 +61,21 @@ var SHEET_HEADERS = {
     'source_thread',
     'message_preview',
     'reason'
+  ],
+  invoice_reaction_posts: [
+    'processed_at',
+    'source_channel_name',
+    'source_channel_id',
+    'source_message_ts',
+    'source_url',
+    'file_id',
+    'file_name',
+    'reaction_name',
+    'target_channel_name',
+    'target_channel_id',
+    'posted_ts',
+    'posted_text',
+    'dry_run'
   ]
 };
 
@@ -98,6 +123,26 @@ function doGet(event) {
     });
   }
 
+  if (action === 'invoice_dryrun') {
+    var invoiceDryRunLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
+    var invoiceDryRunHistoryLimit = parsePositiveInteger_(event.parameter.history_limit, 0);
+    return runHtmlJsonAction_(function() {
+      return processInvoiceReactions_(true, invoiceDryRunLookbackDays || null, invoiceDryRunHistoryLimit || null);
+    });
+  }
+
+  if (action === 'invoice_run') {
+    var invoiceRunLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
+    var invoiceRunHistoryLimit = parsePositiveInteger_(event.parameter.history_limit, 0);
+    var invoiceConfirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      if (invoiceConfirm !== INVOICE_FORWARD_CONFIRM_TOKEN) {
+        throw new Error('請求書転送の手動本番実行には confirm=' + INVOICE_FORWARD_CONFIRM_TOKEN + ' が必要です。');
+      }
+      return processInvoiceReactions_(false, invoiceRunLookbackDays || null, invoiceRunHistoryLimit || null);
+    });
+  }
+
   if (action === 'scan_labels') {
     var scanLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
     var scanMaxThreads = parsePositiveInteger_(event.parameter.max_threads_per_channel, 0);
@@ -126,7 +171,8 @@ function doGet(event) {
       '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
       '<p>状態確認は <code>?action=status</code> です。</p>' +
       '<p>Slack設定は <code>?action=slack</code> です。</p>' +
-      '<p>Slack疎通確認は <code>?action=test_slack</code>、ロジック確認は <code>?action=test_logic</code>、dry runは <code>?action=dryrun</code> です。</p>'
+      '<p>Slack疎通確認は <code>?action=test_slack</code>、ロジック確認は <code>?action=test_logic</code>、dry runは <code>?action=dryrun</code> です。</p>' +
+      '<p>請求書転送の確認は <code>?action=invoice_dryrun</code>、手動本番は <code>?action=invoice_run&amp;confirm=' + INVOICE_FORWARD_CONFIRM_TOKEN + '</code> です。</p>'
     );
   }
 
@@ -222,6 +268,34 @@ function main() {
   return runWithMode_(settings.dryRun, null);
 }
 
+function scheduledMain() {
+  var result = {
+    started_at: nowIso_(),
+    vehicle_linking: null,
+    invoice_forwarding: null,
+    error_count: 0
+  };
+  var settings = getSettings();
+
+  try {
+    result.vehicle_linking = runWithMode_(settings.dryRun, null);
+  } catch (error) {
+    result.error_count += 1;
+    saveError('scheduledMain:vehicle_linking', error);
+  }
+
+  try {
+    result.invoice_forwarding = processInvoiceReactions_(settings.invoiceForwardDryRun);
+  } catch (error) {
+    result.error_count += 1;
+    saveError('scheduledMain:invoice_forwarding', error);
+  }
+
+  result.finished_at = nowIso_();
+  Logger.log('scheduledMain completed: ' + JSON.stringify(result));
+  return result;
+}
+
 function runDryRun() {
   return runWithMode_(true, null);
 }
@@ -247,8 +321,19 @@ function getSetupStatus_() {
       dry_run: '',
       parent_channel_name: '',
       child_channel_names: '',
-      lookback_days: ''
+      lookback_days: '',
+      main_trigger_hours: '',
+      invoice_forward_enabled: '',
+      invoice_forward_dry_run: '',
+      invoice_source_channel_name: '',
+      invoice_target_channel_name: '',
+      invoice_reaction_name: '',
+      invoice_lookback_days: '',
+      invoice_history_limit: ''
     },
+    scheduled_handler: SCHEDULED_HANDLER_FUNCTION,
+    scheduled_trigger_count: 0,
+    scheduled_trigger_found: false,
     main_daily_trigger_found: false,
     main_trigger_count: 0
   };
@@ -274,12 +359,22 @@ function getSetupStatus_() {
       status.settings.parent_channel_name = stringValue_(settingOrDefault_(settings, 'PARENT_CHANNEL_NAME'));
       status.settings.child_channel_names = stringValue_(settingOrDefault_(settings, 'CHILD_CHANNEL_NAMES'));
       status.settings.lookback_days = stringValue_(settingOrDefault_(settings, 'LOOKBACK_DAYS'));
+      status.settings.main_trigger_hours = stringValue_(settingOrDefault_(settings, 'MAIN_TRIGGER_HOURS'));
+      status.settings.invoice_forward_enabled = stringValue_(settingOrDefault_(settings, 'INVOICE_FORWARD_ENABLED'));
+      status.settings.invoice_forward_dry_run = stringValue_(settingOrDefault_(settings, 'INVOICE_FORWARD_DRY_RUN'));
+      status.settings.invoice_source_channel_name = stringValue_(settingOrDefault_(settings, 'INVOICE_SOURCE_CHANNEL_NAME'));
+      status.settings.invoice_target_channel_name = stringValue_(settingOrDefault_(settings, 'INVOICE_TARGET_CHANNEL_NAME'));
+      status.settings.invoice_reaction_name = stringValue_(settingOrDefault_(settings, 'INVOICE_REACTION_NAME'));
+      status.settings.invoice_lookback_days = stringValue_(settingOrDefault_(settings, 'INVOICE_LOOKBACK_DAYS'));
+      status.settings.invoice_history_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_HISTORY_LIMIT'));
     }
   }
 
   var triggers = ScriptApp.getProjectTriggers().filter(function(trigger) {
-    return trigger.getHandlerFunction() === 'main';
+    return trigger.getHandlerFunction() === SCHEDULED_HANDLER_FUNCTION;
   });
+  status.scheduled_trigger_count = triggers.length;
+  status.scheduled_trigger_found = triggers.length > 0;
   status.main_trigger_count = triggers.length;
   status.main_daily_trigger_found = triggers.length > 0;
 
@@ -294,7 +389,7 @@ function renderSlackSettingsPage_(result) {
     'Spreadsheet: ' + (status.spreadsheet_found ? 'OK' : 'NG'),
     'SLACK_BOT_TOKEN: ' + (status.settings.has_slack_bot_token ? 'saved' : 'empty'),
     'DRY_RUN: ' + status.settings.dry_run,
-    'Trigger: ' + (status.main_daily_trigger_found ? 'OK' : 'NG')
+    'Trigger: ' + (status.scheduled_trigger_found ? 'OK' : 'NG') + ' / ' + status.settings.main_trigger_hours
   ].join('\n');
 
   var messageHtml = messages.length
@@ -336,17 +431,21 @@ function createSheets() {
 
 function createDailyTrigger() {
   deleteTriggers();
-  ScriptApp.newTrigger('main')
-    .timeBased()
-    .everyDays(1)
-    .atHour(3)
-    .create();
-  Logger.log('main()の毎日03:00トリガーを作成しました。');
+  var settings = getSettings();
+  settings.mainTriggerHours.forEach(function(hour) {
+    ScriptApp.newTrigger(SCHEDULED_HANDLER_FUNCTION)
+      .timeBased()
+      .everyDays(1)
+      .atHour(hour)
+      .nearMinute(0)
+      .create();
+  });
+  Logger.log(SCHEDULED_HANDLER_FUNCTION + '()の毎日トリガーを作成しました: ' + settings.mainTriggerHours.join(','));
 }
 
 function deleteTriggers() {
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === 'main') {
+    if (trigger.getHandlerFunction() === 'main' || trigger.getHandlerFunction() === SCHEDULED_HANDLER_FUNCTION) {
       ScriptApp.deleteTrigger(trigger);
     }
   });
@@ -380,7 +479,15 @@ function getSettings() {
     parentChannelName: stringValue_(settingOrDefault_(raw, 'PARENT_CHANNEL_NAME')),
     childChannelNames: childChannelNames,
     lookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'LOOKBACK_DAYS'), 60),
-    dryRun: parseBoolean_(settingOrDefault_(raw, 'DRY_RUN'))
+    dryRun: parseBoolean_(settingOrDefault_(raw, 'DRY_RUN')),
+    mainTriggerHours: parseTriggerHours_(settingOrDefault_(raw, 'MAIN_TRIGGER_HOURS')),
+    invoiceForwardEnabled: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_ENABLED')),
+    invoiceSourceChannelName: stringValue_(settingOrDefault_(raw, 'INVOICE_SOURCE_CHANNEL_NAME')),
+    invoiceTargetChannelName: stringValue_(settingOrDefault_(raw, 'INVOICE_TARGET_CHANNEL_NAME')),
+    invoiceReactionName: normalizeReactionName_(settingOrDefault_(raw, 'INVOICE_REACTION_NAME')),
+    invoiceLookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_LOOKBACK_DAYS'), 7),
+    invoiceHistoryLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_LIMIT'), 50),
+    invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN'))
   };
 }
 
@@ -456,32 +563,114 @@ function getThreadMessages(channelId, threadTs) {
   });
 }
 
-function extractVins(text) {
-  var source = stringValue_(text);
-  var vins = [];
+function extractLinkKeys(text) {
+  var keys = [];
   var seen = {};
-  var pattern = /(?:車体番号|車台番号)\s*[:：]\s*([A-Za-z0-9Ａ-Ｚａ-ｚ０-９\-ｰ－ー―]+(?:[ \t　]*[A-Za-z0-9Ａ-Ｚａ-ｚ０-９\-ｰ－ー―]+)*)/g;
+
+  extractVehicleLinkKeys_(text).concat(extractThreadIdLinkKeys_(text)).forEach(function(key) {
+    var storageKey = linkKeyToStorageValue_(key);
+    if (storageKey && !seen[storageKey]) {
+      keys.push(key);
+      seen[storageKey] = true;
+    }
+  });
+
+  return keys;
+}
+
+function extractVehicleLinkKeys_(text) {
+  var source = normalizeUnicode_(text);
+  var keys = [];
+  var pattern = /(?:車体番号|車台番号)\s*:\s*([A-Za-z0-9\-ｰ－ー―]+(?:[ \t　]*[A-Za-z0-9\-ｰ－ー―]+)*)/gi;
   var match;
   while ((match = pattern.exec(source)) !== null) {
-    var vin = normalizeVin(match[1]);
-    if (vin && !seen[vin]) {
-      vins.push(vin);
-      seen[vin] = true;
+    var value = normalizeLinkValue_(match[1]);
+    if (value) {
+      keys.push(makeLinkKey_('vin', value));
     }
   }
-  return vins;
+  return keys;
+}
+
+function extractThreadIdLinkKeys_(text) {
+  var source = normalizeUnicode_(text);
+  var keys = [];
+  var pattern = /ス\s*レ\s*ID\s*:\s*([^\r\n]+)/gi;
+  var match;
+  while ((match = pattern.exec(source)) !== null) {
+    var value = normalizeLinkValue_(match[1]);
+    if (value) {
+      keys.push(makeLinkKey_('thread_id', value));
+    }
+  }
+  return keys;
+}
+
+function makeLinkKey_(type, value) {
+  return {
+    type: type,
+    value: normalizeLinkValue_(value)
+  };
+}
+
+function normalizeLinkKey_(key) {
+  if (typeof key === 'string') {
+    return makeLinkKey_('vin', key);
+  }
+  return makeLinkKey_(key && key.type ? key.type : 'vin', key && key.value ? key.value : '');
+}
+
+function normalizeLinkValue_(value) {
+  var normalized = normalizeUnicode_(value);
+  return normalized
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[ \t　\r\n]+/g, '')
+    .replace(/^[「『【［\[\(<＜]+/g, '')
+    .replace(/[」』】］\]\)>＞、。，．.,;；]+$/g, '')
+    .toUpperCase();
+}
+
+function normalizeUnicode_(value) {
+  var normalized = stringValue_(value);
+  if (normalized.normalize) {
+    normalized = normalized.normalize('NFKC');
+  }
+  return normalized;
+}
+
+function linkKeyToStorageValue_(key) {
+  var normalized = normalizeLinkKey_(key);
+  if (!normalized.value) {
+    return '';
+  }
+  return linkKeyTypeLabel_(normalized.type) + ':' + normalized.value;
+}
+
+function linkKeyTypeLabel_(type) {
+  return type === 'thread_id' ? 'スレID' : '車体番号';
+}
+
+function linkKeysContain_(keys, targetKey) {
+  var targetStorageKey = linkKeyToStorageValue_(targetKey);
+  return (keys || []).some(function(key) {
+    return linkKeyToStorageValue_(key) === targetStorageKey;
+  });
+}
+
+function extractThreadIds(text) {
+  return uniqueValues_(extractThreadIdLinkKeys_(text).map(function(key) {
+    return key.value;
+  }));
+}
+
+function extractVins(text) {
+  return uniqueValues_(extractVehicleLinkKeys_(text).map(function(key) {
+    return key.value;
+  }));
 }
 
 function normalizeVin(vin) {
-  var value = stringValue_(vin);
-  if (value.normalize) {
-    value = value.normalize('NFKC');
-  }
-  value = value
-    .replace(/[ \t　\r\n]+/g, '')
-    .replace(/[、。，．.]+$/g, '')
-    .toUpperCase();
-  return value;
+  return normalizeLinkValue_(vin);
 }
 
 function searchVin(vin) {
@@ -525,6 +714,131 @@ function postThreadMessage(channelId, threadTs, text) {
     unfurl_links: false,
     unfurl_media: false
   });
+}
+
+function postChannelMessage(channelId, text) {
+  return slackApi('chat.postMessage', {
+    channel: channelId,
+    text: text,
+    unfurl_links: false,
+    unfurl_media: false
+  });
+}
+
+function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyLimitOverride) {
+  var startedAt = nowIso_();
+  var stats = {
+    started_at: startedAt,
+    dry_run: Boolean(dryRunOverride),
+    enabled: false,
+    source_channel_name: '',
+    source_channel_id: '',
+    target_channel_name: '',
+    target_channel_id: '',
+    reaction_name: '',
+    lookback_days: 0,
+    history_limit: 0,
+    messages_checked: 0,
+    candidates_found: 0,
+    posted_count: 0,
+    planned_count: 0,
+    duplicate_skipped_count: 0,
+    no_pdf_skipped_count: 0,
+    error_count: 0,
+    history_next_cursor_found: false
+  };
+
+  try {
+    createSheets();
+    var settings = getSettings();
+    stats.enabled = Boolean(settings.invoiceForwardEnabled);
+    stats.source_channel_name = settings.invoiceSourceChannelName;
+    stats.target_channel_name = settings.invoiceTargetChannelName;
+    stats.reaction_name = settings.invoiceReactionName;
+    stats.lookback_days = lookbackDaysOverride || settings.invoiceLookbackDays;
+    stats.history_limit = Math.min(historyLimitOverride || settings.invoiceHistoryLimit, 200);
+
+    if (!settings.invoiceForwardEnabled) {
+      return stats;
+    }
+    if (!settings.slackBotToken) {
+      throw new Error('SLACK_BOT_TOKENが未設定です。settingsシートへBot Tokenを入力してください。');
+    }
+
+    var sourceChannel = getChannelByName_(settings.invoiceSourceChannelName);
+    var targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
+    stats.source_channel_id = sourceChannel.id;
+    stats.target_channel_id = targetChannel.id;
+
+    var response = slackApi('conversations.history', {
+      channel: sourceChannel.id,
+      limit: stats.history_limit,
+      oldest: cutoffSlackTs_(stats.lookback_days),
+      inclusive: true
+    });
+    var messages = response.messages || [];
+    stats.messages_checked = messages.length;
+    stats.history_next_cursor_found = Boolean(response.response_metadata && response.response_metadata.next_cursor);
+
+    messages.forEach(function(message) {
+      try {
+        if (!messageHasReaction_(message, settings.invoiceReactionName)) {
+          return;
+        }
+
+        var pdfFile = findPdfFile_(message);
+        if (!pdfFile) {
+          stats.no_pdf_skipped_count += 1;
+          return;
+        }
+
+        stats.candidates_found += 1;
+        var sourceMessageTs = message.ts;
+        var fileId = stringValue_(pdfFile.id || pdfFile.url_private || invoiceFileName_(pdfFile));
+        if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
+          stats.duplicate_skipped_count += 1;
+          return;
+        }
+
+        var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
+        var text = invoiceForwardMessage_(invoiceFileName_(pdfFile), sourceUrl);
+        if (dryRunOverride) {
+          stats.planned_count += 1;
+          return;
+        }
+
+        var postResponse = postChannelMessage(targetChannel.id, text);
+        saveInvoiceReactionPost_({
+          processed_at: nowIso_(),
+          source_channel_name: sourceChannel.name,
+          source_channel_id: sourceChannel.id,
+          source_message_ts: sourceMessageTs,
+          source_url: sourceUrl,
+          file_id: fileId,
+          file_name: invoiceFileName_(pdfFile),
+          reaction_name: normalizeReactionName_(settings.invoiceReactionName),
+          target_channel_name: targetChannel.name,
+          target_channel_id: targetChannel.id,
+          posted_ts: postResponse.ts || '',
+          posted_text: text,
+          dry_run: false
+        });
+        stats.posted_count += 1;
+      } catch (error) {
+        stats.error_count += 1;
+        saveError('processInvoiceReactionMessage:' + (message.ts || ''), error);
+      }
+    });
+  } catch (error) {
+    stats.error_count += 1;
+    saveError('processInvoiceReactions', error);
+    throw error;
+  } finally {
+    stats.finished_at = nowIso_();
+    Logger.log('processInvoiceReactions completed: ' + JSON.stringify(stats));
+  }
+
+  return stats;
 }
 
 function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl, targetUrl) {
@@ -616,7 +930,62 @@ function saveDryRunLog(record) {
   ]);
 }
 
+function saveInvoiceReactionPost_(record) {
+  var sheet = createSheets().getSheetByName('invoice_reaction_posts');
+  var row = [
+    record.processed_at || nowIso_(),
+    record.source_channel_name || '',
+    record.source_channel_id || '',
+    record.source_message_ts || '',
+    record.source_url || '',
+    record.file_id || '',
+    record.file_name || '',
+    record.reaction_name || '',
+    record.target_channel_name || '',
+    record.target_channel_id || '',
+    record.posted_ts || '',
+    record.posted_text || '',
+    String(Boolean(record.dry_run))
+  ].map(function(value) {
+    return stringValue_(value);
+  });
+  var rowIndex = sheet.getLastRow() + 1;
+  sheet.getRange(rowIndex, 1, 1, row.length).setNumberFormat('@');
+  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+}
+
+function isInvoiceAlreadyPosted_(sourceChannelId, sourceMessageTs, fileId, reactionName) {
+  var sheet = createSheets().getSheetByName('invoice_reaction_posts');
+  var values = sheet.getDataRange().getValues();
+  if (values.length <= 1) {
+    return false;
+  }
+  var normalizedTs = normalizeSlackTsForCompare_(sourceMessageTs);
+  var normalizedReaction = normalizeReactionName_(reactionName);
+  var normalizedFileId = stringValue_(fileId);
+  for (var i = 1; i < values.length; i += 1) {
+    var row = values[i];
+    var dryRun = parseBoolean_(row[12]);
+    if (dryRun) {
+      continue;
+    }
+    if (
+      stringValue_(row[2]) === stringValue_(sourceChannelId) &&
+      normalizeSlackTsForCompare_(row[3]) === normalizedTs &&
+      stringValue_(row[5]) === normalizedFileId &&
+      normalizeReactionName_(row[7]) === normalizedReaction
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function resolveVinGroups(vin, searchResults) {
+  return resolveLinkKeyGroups(makeLinkKey_('vin', vin), searchResults);
+}
+
+function resolveLinkKeyGroups(linkKey, searchResults) {
   var settings = getSettings();
   var parentChannelId = getChannelIdByName(settings.parentChannelName);
   var childChannels = settings.childChannelNames.map(function(name) {
@@ -626,13 +995,18 @@ function resolveVinGroups(vin, searchResults) {
     };
   });
 
-  return resolveVinGroupsFromChannels_(vin, searchResults, parentChannelId, childChannels);
+  return resolveLinkKeyGroupsFromChannels_(linkKey, searchResults, parentChannelId, childChannels);
 }
 
 function resolveVinGroupsFromChannels_(vin, searchResults, parentChannelId, childChannels) {
-  var normalizedVin = normalizeVin(vin);
+  return resolveLinkKeyGroupsFromChannels_(makeLinkKey_('vin', vin), searchResults, parentChannelId, childChannels);
+}
+
+function resolveLinkKeyGroupsFromChannels_(linkKey, searchResults, parentChannelId, childChannels) {
+  var normalizedKey = normalizeLinkKey_(linkKey);
+  var storageKey = linkKeyToStorageValue_(normalizedKey);
   var targetThreads = (searchResults || []).filter(function(thread) {
-    return thread.vins && thread.vins.indexOf(normalizedVin) !== -1;
+    return linkKeysContain_(thread.linkKeys || linkKeysFromLegacyVins_(thread.vins), normalizedKey);
   });
 
   var parentThreads = targetThreads
@@ -657,7 +1031,8 @@ function resolveVinGroupsFromChannels_(vin, searchResults, parentChannelId, chil
   });
 
   return {
-    vin: normalizedVin,
+    vin: storageKey,
+    linkKey: normalizedKey,
     parent: parentThreads.length ? parentThreads[0] : null,
     parentDuplicates: parentThreads.slice(1),
     childGroups: childGroups
@@ -674,14 +1049,29 @@ function testExtractVins() {
     '車体番号: ZVW30-1234567',
     '車体番号：DA17V-987654、',
     '車台番号: NHP10-123456',
-    '車台番号：MH34S-765432'
+    '車台番号：MH34S-765432',
+    '車体番号：ＡＢ １２３'
   ].join('\n');
   var vins = extractVins(text);
-  var expected = ['ZVW30-1234567', 'DA17V-987654', 'NHP10-123456', 'MH34S-765432'];
+  var expected = ['ZVW30-1234567', 'DA17V-987654', 'NHP10-123456', 'MH34S-765432', 'AB123'];
   if (JSON.stringify(vins) !== JSON.stringify(expected)) {
     throw new Error('testExtractVins failed: ' + JSON.stringify(vins));
   }
   Logger.log('testExtractVins OK: ' + JSON.stringify(vins));
+}
+
+function testExtractLinkKeys() {
+  var text = [
+    '車体番号：ＡＢ １２３',
+    'スレid： 案 件 ａｂｃ１２３。',
+    'スレＩＤ:案件ABC123'
+  ].join('\n');
+  var keys = extractLinkKeys(text).map(linkKeyToStorageValue_);
+  var expected = ['車体番号:AB123', 'スレID:案件ABC123'];
+  if (JSON.stringify(keys) !== JSON.stringify(expected)) {
+    throw new Error('testExtractLinkKeys failed: ' + JSON.stringify(keys));
+  }
+  Logger.log('testExtractLinkKeys OK: ' + JSON.stringify(keys));
 }
 
 function testSlackAuth() {
@@ -704,6 +1094,8 @@ function testFindChannels() {
 }
 
 function testResolveVinGroups() {
+  testExtractVins();
+  testExtractLinkKeys();
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
@@ -715,7 +1107,9 @@ function testResolveVinGroups() {
     testThread_('CHILD_CARMORE', 'carmore依頼', '150.000001', ['ABC123'], 'https://slack.test/carmore-old'),
     testThread_('CHILD_CARMORE', 'carmore依頼', '250.000001', ['ABC123'], 'https://slack.test/carmore-new'),
     testThread_('CHILD_ALLMACHINE', 'オールマシンサービス', '175.000001', ['ABC123'], 'https://slack.test/allmachine-old'),
-    testThread_('CHILD_CARMORE', 'carmore依頼', '300.000001', ['ABC1234'], 'https://slack.test/partial-match')
+    testThread_('CHILD_CARMORE', 'carmore依頼', '300.000001', ['ABC1234'], 'https://slack.test/partial-match'),
+    testThread_('PARENT', '依頼_車案件', '400.000001', [], 'https://slack.test/thread-id-parent', ['案件ABC123']),
+    testThread_('CHILD_CARMORE', 'carmore依頼', '450.000001', [], 'https://slack.test/thread-id-child', ['案件 abc１２３'])
   ];
 
   var groups = resolveVinGroupsFromChannels_('abc123', threads, parentChannelId, childChannels);
@@ -738,10 +1132,24 @@ function testResolveVinGroups() {
   assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 2, 'child to parent action count');
   assertTest_(actions.every(function(action) { return action.source.url !== 'https://slack.test/partial-match'; }), 'partial VIN match must not be included');
 
+  var threadIdGroups = resolveLinkKeyGroupsFromChannels_(makeLinkKey_('thread_id', '案件ABC123'), threads, parentChannelId, childChannels);
+  var threadIdActions = buildLinkActions_(threadIdGroups);
+  assertTest_(threadIdGroups.parent.url === 'https://slack.test/thread-id-parent', 'thread ID parent must be selected');
+  assertTest_(threadIdActions.length === 1, 'thread ID child to parent action count');
+  assertTest_(threadIdActions[0].vin === 'スレID:案件ABC123', 'thread ID storage key');
+
   Logger.log('testResolveVinGroups OK: ' + JSON.stringify(actionSummary));
   return {
     ok: true,
-    actions: actionSummary
+    actions: actionSummary,
+    thread_id_actions: threadIdActions.map(function(action) {
+      return {
+        relationType: action.relationType,
+        sourceUrl: action.source.url,
+        targetUrl: action.target.url,
+        key: action.vin
+      };
+    })
   };
 }
 
@@ -749,7 +1157,11 @@ function testDryRunOnce() {
   return runDryRun();
 }
 
-function testThread_(channelId, channelName, createdTs, vins, url) {
+function testThread_(channelId, channelName, createdTs, vins, url, threadIds) {
+  var linkKeys = linkKeysFromLegacyVins_(vins);
+  (threadIds || []).forEach(function(threadId) {
+    linkKeys.push(makeLinkKey_('thread_id', threadId));
+  });
   return {
     channelId: channelId,
     channelName: channelName,
@@ -757,7 +1169,9 @@ function testThread_(channelId, channelName, createdTs, vins, url) {
     threadTs: createdTs,
     createdTs: createdTs,
     lastTs: createdTs,
-    vins: vins,
+    vins: (vins || []).map(normalizeVin),
+    threadIds: (threadIds || []).map(normalizeLinkValue_),
+    linkKeys: linkKeys,
     url: url
   };
 }
@@ -775,6 +1189,7 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
     dry_run: Boolean(dryRun),
     parent_threads_checked: 0,
     vins_found: 0,
+    link_keys_found: 0,
     child_matches_found: 0,
     posted_count: 0,
     planned_count: 0,
@@ -825,24 +1240,26 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
       return thread.role === 'parent';
     }).length;
 
-    var vins = collectVins_(allThreads);
+    var linkKeys = collectLinkKeys_(allThreads);
     if (onlyVin) {
-      vins = vins.filter(function(vin) {
-        return vin === onlyVin;
+      var onlyKey = makeLinkKey_('vin', onlyVin);
+      linkKeys = linkKeys.filter(function(linkKey) {
+        return linkKeyToStorageValue_(linkKey) === linkKeyToStorageValue_(onlyKey);
       });
     }
-    stats.vins_found = vins.length;
+    stats.vins_found = linkKeys.length;
+    stats.link_keys_found = linkKeys.length;
 
-    vins.forEach(function(vin) {
+    linkKeys.forEach(function(linkKey) {
       try {
-        var groups = resolveVinGroupsFromChannels_(vin, allThreads, parentChannel.id, childChannels);
+        var groups = resolveLinkKeyGroupsFromChannels_(linkKey, allThreads, parentChannel.id, childChannels);
         stats.child_matches_found += groups.childGroups.reduce(function(count, group) {
           return count + group.threads.length;
         }, 0);
         processVinGroup_(groups, dryRun, stats);
       } catch (error) {
         stats.error_count += 1;
-        saveError('processVin:' + vin, error);
+        saveError('processLinkKey:' + linkKeyToStorageValue_(linkKey), error);
       }
     });
   } catch (error) {
@@ -868,6 +1285,7 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
   Logger.log('Completed: ' + JSON.stringify({
     dry_run: dryRun,
     vins_found: stats.vins_found,
+    link_keys_found: stats.link_keys_found,
     planned_count: stats.planned_count,
     posted_count: stats.posted_count,
     duplicate_skipped_count: stats.duplicate_skipped_count,
@@ -1028,8 +1446,10 @@ function getRecentThreadsWithStats_(channelId, lookbackDays, maxThreads) {
       var text = messages.map(function(message) {
         return stringValue_(message.text);
       }).join('\n');
+      var linkKeys = extractLinkKeys(text);
       var vins = extractVins(text);
-      if (!vins.length) {
+      var threadIds = extractThreadIds(text);
+      if (!linkKeys.length) {
         return;
       }
 
@@ -1041,6 +1461,8 @@ function getRecentThreadsWithStats_(channelId, lookbackDays, maxThreads) {
         createdTs: root.ts,
         lastTs: String(lastTs),
         vins: vins,
+        threadIds: threadIds,
+        linkKeys: linkKeys,
         url: getPermalink(channelId, root.thread_ts || root.ts)
       });
     } catch (error) {
@@ -1078,9 +1500,15 @@ function scanVinLabels_(channelRole, lookbackDaysOverride, maxThreadsPerChannel,
     total_threads_scanned: 0,
     total_label_threads: 0,
     total_vin_threads: 0,
-    vins: []
+    total_thread_id_threads: 0,
+    total_link_key_threads: 0,
+    vins: [],
+    thread_ids: [],
+    link_keys: []
   };
   var seenVins = {};
+  var seenThreadIds = {};
+  var seenLinkKeys = {};
 
   channels.forEach(function(channel) {
     var scan = scanChannelVinLabels_(channel, lookbackDays, maxThreadsPerChannel);
@@ -1088,6 +1516,8 @@ function scanVinLabels_(channelRole, lookbackDaysOverride, maxThreadsPerChannel,
     result.total_threads_scanned += scan.threads_scanned;
     result.total_label_threads += scan.label_threads;
     result.total_vin_threads += scan.vin_threads;
+    result.total_thread_id_threads += scan.thread_id_threads;
+    result.total_link_key_threads += scan.link_key_threads;
     scan.samples.forEach(function(sample) {
       (sample.vins || []).forEach(function(vin) {
         if (!seenVins[vin]) {
@@ -1095,10 +1525,24 @@ function scanVinLabels_(channelRole, lookbackDaysOverride, maxThreadsPerChannel,
           result.vins.push(vin);
         }
       });
+      (sample.thread_ids || []).forEach(function(threadId) {
+        if (!seenThreadIds[threadId]) {
+          seenThreadIds[threadId] = true;
+          result.thread_ids.push(threadId);
+        }
+      });
+      (sample.link_keys || []).forEach(function(linkKey) {
+        if (!seenLinkKeys[linkKey]) {
+          seenLinkKeys[linkKey] = true;
+          result.link_keys.push(linkKey);
+        }
+      });
     });
   });
 
   result.vins.sort();
+  result.thread_ids.sort();
+  result.link_keys.sort();
   return result;
 }
 
@@ -1114,6 +1558,8 @@ function scanChannelVinLabels_(channel, lookbackDays, maxThreads) {
     threads_scanned: 0,
     label_threads: 0,
     vin_threads: 0,
+    thread_id_threads: 0,
+    link_key_threads: 0,
     samples: []
   };
 
@@ -1127,15 +1573,24 @@ function scanChannelVinLabels_(channel, lookbackDays, maxThreads) {
       var text = messages.map(function(message) {
         return stringValue_(message.text);
       }).join('\n');
-      var hasLabel = /(?:車体番号|車台番号)\s*[:：]/.test(text);
+      var normalizedText = normalizeUnicode_(text);
+      var hasLabel = /(?:車体番号|車台番号)\s*:|ス\s*レ\s*ID\s*:/i.test(normalizedText);
       var vins = extractVins(text);
+      var threadIds = extractThreadIds(text);
+      var linkKeys = extractLinkKeys(text);
       if (hasLabel) {
         summary.label_threads += 1;
       }
       if (vins.length) {
         summary.vin_threads += 1;
       }
-      if (hasLabel || vins.length) {
+      if (threadIds.length) {
+        summary.thread_id_threads += 1;
+      }
+      if (linkKeys.length) {
+        summary.link_key_threads += 1;
+      }
+      if (hasLabel || linkKeys.length) {
         var root = messages[0];
         var lastTs = messages.reduce(function(maxTs, message) {
           return Math.max(maxTs, slackTsNumber_(message.ts));
@@ -1145,7 +1600,9 @@ function scanChannelVinLabels_(channel, lookbackDays, maxThreads) {
           created_ts: root.ts,
           last_ts: String(lastTs),
           has_label: hasLabel,
-          vins: vins
+          vins: vins,
+          thread_ids: threadIds,
+          link_keys: linkKeys.map(linkKeyToStorageValue_)
         });
       }
     } catch (error) {
@@ -1188,9 +1645,9 @@ function linkKnownThreads_(sourceChannelName, sourceThreadTs, targetThreadTs, dr
 
   var sourceThread = readThreadForLink_(sourceChannel, sourceThreadTs);
   var targetThread = readThreadForLink_(parentChannel, targetThreadTs);
-  var sharedVin = findSharedVin_(sourceThread.vins, targetThread.vins);
-  if (!sharedVin) {
-    throw new Error('指定された2スレッドに共通する車体番号が見つかりません。');
+  var sharedLinkKey = findSharedLinkKey_(sourceThread.linkKeys, targetThread.linkKeys);
+  if (!sharedLinkKey) {
+    throw new Error('指定された2スレッドに共通する車体番号またはスレIDが見つかりません。');
   }
 
   var stats = {
@@ -1207,7 +1664,7 @@ function linkKnownThreads_(sourceChannelName, sourceThreadTs, targetThreadTs, dr
     plannedKeys: {}
   };
   var action = {
-    vin: sharedVin,
+    vin: linkKeyToStorageValue_(sharedLinkKey),
     relationType: 'child_to_parent',
     source: sourceThread,
     target: targetThread,
@@ -1239,9 +1696,11 @@ function readThreadForLink_(channel, threadTs) {
   var text = messages.map(function(message) {
     return stringValue_(message.text);
   }).join('\n');
+  var linkKeys = extractLinkKeys(text);
   var vins = extractVins(text);
-  if (!vins.length) {
-    throw new Error('指定スレッドから車体番号を抽出できませんでした: ' + channel.name + ' ' + threadTs);
+  var threadIds = extractThreadIds(text);
+  if (!linkKeys.length) {
+    throw new Error('指定スレッドから車体番号またはスレIDを抽出できませんでした: ' + channel.name + ' ' + threadTs);
   }
   var lastTs = messages.reduce(function(maxTs, message) {
     return Math.max(maxTs, slackTsNumber_(message.ts));
@@ -1254,21 +1713,29 @@ function readThreadForLink_(channel, threadTs) {
     createdTs: root.ts,
     lastTs: String(lastTs),
     vins: vins,
+    threadIds: threadIds,
+    linkKeys: linkKeys,
     url: getPermalink(channel.id, root.thread_ts || root.ts)
   };
 }
 
 function findSharedVin_(sourceVins, targetVins) {
+  var sharedKey = findSharedLinkKey_(linkKeysFromLegacyVins_(sourceVins), linkKeysFromLegacyVins_(targetVins));
+  return sharedKey ? sharedKey.value : '';
+}
+
+function findSharedLinkKey_(sourceKeys, targetKeys) {
   var targetMap = {};
-  (targetVins || []).forEach(function(vin) {
-    targetMap[vin] = true;
+  (targetKeys || []).forEach(function(key) {
+    targetMap[linkKeyToStorageValue_(key)] = normalizeLinkKey_(key);
   });
-  for (var i = 0; i < (sourceVins || []).length; i += 1) {
-    if (targetMap[sourceVins[i]]) {
-      return sourceVins[i];
+  for (var i = 0; i < (sourceKeys || []).length; i += 1) {
+    var sourceKey = normalizeLinkKey_(sourceKeys[i]);
+    if (targetMap[linkKeyToStorageValue_(sourceKey)]) {
+      return sourceKey;
     }
   }
-  return '';
+  return null;
 }
 
 function collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap, maxThreads) {
@@ -1439,7 +1906,15 @@ function settingMemo_(key) {
     PARENT_CHANNEL_NAME: '大親チャンネル名。',
     CHILD_CHANNEL_NAMES: '子チャンネル名をカンマ区切りで指定します。',
     LOOKBACK_DAYS: '最終更新日時がこの日数以内のスレッドだけ対象にします。',
-    DRY_RUN: 'trueならSlackへ投稿せずdry_run_logsだけ保存します。'
+    DRY_RUN: 'trueなら車案件の紐付けをSlackへ投稿せずdry_run_logsだけ保存します。',
+    MAIN_TRIGGER_HOURS: 'scheduledMain()を毎日実行する時刻です。0-23時をカンマ区切りで指定します。例: 3,13,20',
+    INVOICE_FORWARD_ENABLED: 'trueならロケットリアクション付きPDF投稿を請求書チャンネルへ転送します。',
+    INVOICE_SOURCE_CHANNEL_NAME: 'ロケットリアクション付きPDF投稿を監視するチャンネル名です。',
+    INVOICE_TARGET_CHANNEL_NAME: '請求書転送先チャンネル名です。',
+    INVOICE_REACTION_NAME: '転送条件にするSlack絵文字名です。:rocket: の場合は rocket と指定します。',
+    INVOICE_LOOKBACK_DAYS: '請求書転送で直近何日分の投稿を見るかを指定します。',
+    INVOICE_HISTORY_LIMIT: '請求書転送で1回に確認する投稿数です。制限対策のため必要以上に増やさないでください。',
+    INVOICE_FORWARD_DRY_RUN: 'trueなら請求書転送もSlackへ投稿せず候補数だけ確認します。'
   };
   return memos[key] || '';
 }
@@ -1563,7 +2038,7 @@ function channelNameMatches_(channel, requestedName) {
 }
 
 function channelNameVariants_(name) {
-  var base = stringValue_(name).trim();
+  var base = normalizeUnicode_(name).trim();
   var lower = base.toLowerCase();
   var hyphenated = lower.replace(/[ \t　]+/g, '-');
   var compact = lower.replace(/[ \t　_-]+/g, '');
@@ -1573,17 +2048,39 @@ function channelNameVariants_(name) {
 }
 
 function collectVins_(threads) {
+  return collectLinkKeys_(threads)
+    .filter(function(linkKey) {
+      return normalizeLinkKey_(linkKey).type === 'vin';
+    })
+    .map(function(linkKey) {
+      return linkKey.value;
+    });
+}
+
+function collectLinkKeys_(threads) {
   var seen = {};
-  var vins = [];
-  threads.forEach(function(thread) {
-    (thread.vins || []).forEach(function(vin) {
-      if (!seen[vin]) {
-        seen[vin] = true;
-        vins.push(vin);
+  var linkKeys = [];
+  (threads || []).forEach(function(thread) {
+    (thread.linkKeys || linkKeysFromLegacyVins_(thread.vins)).forEach(function(linkKey) {
+      var normalizedKey = normalizeLinkKey_(linkKey);
+      var storageKey = linkKeyToStorageValue_(normalizedKey);
+      if (storageKey && !seen[storageKey]) {
+        seen[storageKey] = true;
+        linkKeys.push(normalizedKey);
       }
     });
   });
-  return vins.sort();
+  return linkKeys.sort(function(a, b) {
+    return linkKeyToStorageValue_(a).localeCompare(linkKeyToStorageValue_(b), 'ja');
+  });
+}
+
+function linkKeysFromLegacyVins_(vins) {
+  return (vins || []).map(function(vin) {
+    return makeLinkKey_('vin', vin);
+  }).filter(function(linkKey) {
+    return Boolean(linkKey.value);
+  });
 }
 
 function ensureThreadUrl_(thread) {
@@ -1651,9 +2148,67 @@ function slackTsNumber_(ts) {
   return parseFloat(ts || '0') || 0;
 }
 
+function messageHasReaction_(message, reactionName) {
+  var expected = normalizeReactionName_(reactionName);
+  return (message.reactions || []).some(function(reaction) {
+    return normalizeReactionName_(reaction.name) === expected;
+  });
+}
+
+function normalizeReactionName_(value) {
+  return normalizeUnicode_(value).replace(/^:+|:+$/g, '').trim().toLowerCase();
+}
+
+function findPdfFile_(message) {
+  return (message.files || []).filter(isPdfFile_)[0] || null;
+}
+
+function isPdfFile_(file) {
+  var mimetype = stringValue_(file.mimetype).toLowerCase();
+  var filetype = stringValue_(file.filetype).toLowerCase();
+  var name = invoiceFileName_(file).toLowerCase();
+  return mimetype === 'application/pdf' || filetype === 'pdf' || /\.pdf$/.test(name);
+}
+
+function invoiceFileName_(file) {
+  return stringValue_(file.name || file.title || file.id || 'file.pdf');
+}
+
+function invoiceForwardMessage_(fileName, sourceUrl) {
+  return '【' + fileName + ' ' + todayDateString_() + '】\n' + sourceUrl;
+}
+
+function todayDateString_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
 function parseBoolean_(value) {
   var normalized = stringValue_(value).trim().toLowerCase();
   return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'y';
+}
+
+function parseTriggerHours_(value) {
+  var seen = {};
+  var hours = stringValue_(value)
+    .split(',')
+    .map(function(part) {
+      return parseInt(part, 10);
+    })
+    .filter(function(hour) {
+      if (hour < 0 || hour > 23 || seen[hour]) {
+        return false;
+      }
+      seen[hour] = true;
+      return true;
+    });
+  if (hours.length) {
+    return hours.sort(function(a, b) {
+      return a - b;
+    });
+  }
+  return DEFAULT_SETTINGS.MAIN_TRIGGER_HOURS.split(',').map(function(part) {
+    return parseInt(part, 10);
+  });
 }
 
 function parsePositiveInteger_(value, fallback) {
@@ -1663,6 +2218,18 @@ function parsePositiveInteger_(value, fallback) {
 
 function stringValue_(value) {
   return value === null || value === undefined ? '' : String(value);
+}
+
+function uniqueValues_(values) {
+  var seen = {};
+  return (values || []).filter(function(value) {
+    var key = stringValue_(value);
+    if (!key || seen[key]) {
+      return false;
+    }
+    seen[key] = true;
+    return true;
+  });
 }
 
 function escapeHtml_(value) {

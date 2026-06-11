@@ -1,8 +1,8 @@
 # SEEMORE Slack車案件 自動紐付けGAS
 
-Slack内の車案件スレッドを、車体番号の完全一致だけで自動紐付けするGoogle Apps Scriptです。
+Slack内の車案件スレッドを、車体番号またはスレIDの完全一致で自動紐付けするGoogle Apps Scriptです。
 
-ローカルPC、VPS、Python、SQLiteは使いません。Google Apps Script、Slack API、Googleスプレッドシートだけで動きます。毎日03:00にGASトリガーで実行するため、PCを閉じていても処理されます。
+ローカルPC、VPS、Python、SQLiteは使いません。Google Apps Script、Slack API、Googleスプレッドシートだけで動きます。毎日03:00、13:00、20:00付近にGASトリガーで実行するため、PCを閉じていても処理されます。
 
 初期状態は必ず `DRY_RUN=true` です。最初はSlackへ投稿せず、投稿予定だけを `dry_run_logs` シートへ保存します。
 
@@ -19,9 +19,9 @@ Slack内の車案件スレッドを、車体番号の完全一致だけで自動
 
 ## 仕組み
 
-1. 対象チャンネルのスレッドから `車体番号:`、`車体番号：`、`車台番号:`、`車台番号：` を抽出します。
-2. 抽出した車体番号を正規化します。
-3. 正規化後の完全一致だけを同一案件として扱います。
+1. 対象チャンネルのスレッドから `車体番号:`、`車台番号:`、`スレID:` を抽出します。
+2. `:` / `：`、全角英数字、大文字小文字、空白ゆれを正規化します。
+3. 正規化後の車体番号またはスレIDの完全一致だけを同一案件として扱います。
 4. 最終更新が `LOOKBACK_DAYS` 日以内のスレッドだけ処理します。
 5. `依頼_車案件` 内では最古スレッドを大親にします。
 6. 子チャンネル内では最古スレッドを代表にします。
@@ -30,6 +30,19 @@ Slack内の車案件スレッドを、車体番号の完全一致だけで自動
 9. 履歴シートとSlack投稿先スレッド本文の両方で同じURLを確認し、二重投稿を防ぎます。
 
 部分一致、類似一致、AI推測はしません。誤投稿より未投稿を優先します。
+
+`スレID` の値は英数字、日本語、全角文字が混ざってもよい前提です。比較時はNFKC正規化、大文字化、空白除去を行います。
+
+## 請求書ロケット転送
+
+`依頼＿ALL` の投稿にPDFファイルがあり、指定リアクション `rocket` が付いている場合、`依頼＿請求書` へ以下の形式で投稿します。
+
+```text
+【ファイル名 2026-06-12】
+<元投稿のSlackリンク>
+```
+
+転送済みは `invoice_reaction_posts` シートに保存し、同じ投稿、同じPDF、同じリアクションでは再投稿しません。
 
 ## 必要なSlack Bot Scopes
 
@@ -40,6 +53,8 @@ channels:read
 channels:history
 groups:read
 groups:history
+reactions:read
+files:read
 chat:write
 ```
 
@@ -86,6 +101,8 @@ Slackの各対象チャンネルで以下を実行します。
 - `依頼_車案件`
 - `carmore依頼`
 - `オールマシンサービス`
+- `依頼＿ALL`
+- `依頼＿請求書`
 
 ## Google Apps Script作成
 
@@ -103,19 +120,19 @@ Apps Scriptの関数選択で `setup` を選び、実行します。
 
 `clasp` デプロイ済みの場合は、WebアプリURLの末尾に `?action=setup` を付けて開いても同じセットアップが実行されます。
 
-セットアップ後の状態確認は、同じWebアプリURLの末尾を `?action=status` にして開きます。スプレッドシート、シートヘッダー、`settings` 初期値、`main()` トリガー有無をJSONで確認できます。
+セットアップ後の状態確認は、同じWebアプリURLの末尾を `?action=status` にして開きます。スプレッドシート、シートヘッダー、`settings` 初期値、`scheduledMain()` トリガー有無をJSONで確認できます。
 
 Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして開くと保存できます。保存後に `testSlackAuth()` と `testFindChannels()` 相当の疎通確認を実行します。
 
-デプロイ後の追加確認は、本人限定WebアプリURLで `?action=test_slack`、`?action=test_logic`、`?action=dryrun` を開いて実行できます。`test_logic` は実Slackへ投稿せず、親子判定、代表スレッド選定、重複アクション、部分一致除外を合成データで確認します。`dryrun` は `DRY_RUN=true` のまま投稿予定を `dry_run_logs` に保存します。短時間検証では `?action=dryrun&lookback_days=7&max_threads_per_channel=5` のように走査範囲と各チャンネルの確認件数を一時上書きできます。
+デプロイ後の追加確認は、本人限定WebアプリURLで `?action=test_slack`、`?action=test_logic`、`?action=dryrun` を開いて実行できます。`test_logic` は実Slackへ投稿せず、親子判定、代表スレッド選定、重複アクション、部分一致除外、スレID正規化を合成データで確認します。`dryrun` は `DRY_RUN=true` のまま投稿予定を `dry_run_logs` に保存します。短時間検証では `?action=dryrun&lookback_days=7&max_threads_per_channel=5` のように走査範囲と各チャンネルの確認件数を一時上書きできます。
 
 `setup()` は以下を自動で行います。
 
 - スプレッドシート `SEEMORE_Slack車案件リンク管理` の作成
-- `settings`、`linked_threads`、`run_logs`、`errors`、`dry_run_logs` シートの作成
+- `settings`、`linked_threads`、`run_logs`、`errors`、`dry_run_logs`、`invoice_reaction_posts` シートの作成
 - ヘッダー行の作成
 - `settings` 初期値の作成
-- 毎日03:00に `main()` を実行するトリガーの作成
+- 毎日03:00、13:00、20:00付近に `scheduledMain()` を実行するトリガーの作成
 
 ## settingsシート
 
@@ -128,7 +145,15 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `PARENT_CHANNEL_NAME` | `依頼_車案件` | 大親チャンネル名です。 |
 | `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |
-| `DRY_RUN` | `true` | `true` の間はSlackへ投稿しません。 |
+| `DRY_RUN` | `true` | `true` の間は車案件の自動紐付けをSlackへ投稿しません。 |
+| `MAIN_TRIGGER_HOURS` | `3,13,20` | `scheduledMain()` を実行する時刻です。Apps Scriptの仕様上、分単位ぴったりではなく指定時刻付近で動きます。 |
+| `INVOICE_FORWARD_ENABLED` | `true` | ロケットリアクション付きPDF投稿の請求書転送を有効にします。 |
+| `INVOICE_SOURCE_CHANNEL_NAME` | `依頼＿ALL` | PDFとロケットリアクションを確認するチャンネル名です。 |
+| `INVOICE_TARGET_CHANNEL_NAME` | `依頼＿請求書` | 請求書転送先チャンネル名です。 |
+| `INVOICE_REACTION_NAME` | `rocket` | 転送条件にするSlack絵文字名です。 |
+| `INVOICE_LOOKBACK_DAYS` | `7` | 請求書転送で直近何日分を見るかです。 |
+| `INVOICE_HISTORY_LIMIT` | `50` | 請求書転送で1回に確認する投稿数です。 |
+| `INVOICE_FORWARD_DRY_RUN` | `false` | `true` にすると請求書転送も投稿せず候補数だけ確認します。 |
 
 ## テスト関数
 
@@ -137,7 +162,8 @@ Apps Script上で以下を実行できます。
 | 関数 | 内容 |
 | --- | --- |
 | `testExtractVins()` | 車体番号抽出と正規化の簡易テストを実行します。 |
-| `testResolveVinGroups()` | 合成データで親子判定、代表選定、部分一致除外を確認します。 |
+| `testExtractLinkKeys()` | 車体番号とスレIDの抽出、全角半角、大文字小文字、空白除去の正規化を確認します。 |
+| `testResolveVinGroups()` | 合成データで親子判定、代表選定、部分一致除外、スレID紐付けを確認します。 |
 | `testSlackAuth()` | Slack API認証が通るか確認します。 |
 | `testFindChannels()` | 対象3チャンネルのIDが取得できるか確認します。 |
 | `testDryRunOnce()` | `DRY_RUN=true` 相当で1回処理し、投稿予定を `dry_run_logs` に保存します。 |
@@ -149,13 +175,17 @@ Apps Script上で以下を実行できます。
 本人限定WebアプリURLでは、通常の `dryrun` が広範囲走査で時間上限に近い場合に備え、以下の診断アクションも使えます。
 
 - `?action=scan_labels&channel_role=parent&lookback_days=365&max_threads_per_channel=300`
-  - 指定ロールのチャンネルを走査し、`車体番号:` / `車台番号:` ラベルを含むスレッド数とVIN候補を確認します。
+  - 指定ロールのチャンネルを走査し、`車体番号:` / `車台番号:` / `スレID:` ラベルを含むスレッド数と候補を確認します。
 - `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
   - `channel_name` を指定すると、対象チャンネルだけを診断します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
-  - 既知の子スレッドと親スレッドを再読し、両方に共通VINがある場合だけ投稿予定を確認します。
+  - 既知の子スレッドと親スレッドを再読し、両方に共通する車体番号またはスレIDがある場合だけ投稿予定を確認します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=false&confirm=RUN_PRODUCTION`
   - 既知ペアを1回だけ本番投稿します。本番投稿には `confirm=RUN_PRODUCTION` が必須です。
+- `?action=invoice_dryrun`
+  - `依頼＿ALL` の直近投稿から、ロケットリアクション付きPDFの転送候補を確認します。Slackへは投稿しません。
+- `?action=invoice_run&confirm=RUN_INVOICE_FORWARD`
+  - 請求書転送を手動で本番実行します。
 
 重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
 
@@ -177,9 +207,9 @@ Apps Script上で以下を実行できます。
 
 `dry_run_logs` に問題がない場合だけ、`settings` シートの `DRY_RUN` を `false` に変更します。
 
-以降、毎日03:00の `main()` 実行でSlackへ投稿します。
+以降、毎日03:00、13:00、20:00付近の `scheduledMain()` 実行で車案件の紐付けと請求書転送を処理します。
 
-手動で本番実行する場合は `main()` を実行します。`runProduction()` は `DRY_RUN=false` になっていない場合は停止します。
+車案件だけを手動で本番実行する場合は `runProduction()` を実行します。`runProduction()` は `DRY_RUN=false` になっていない場合は停止します。
 
 ## シート構成
 
@@ -200,6 +230,8 @@ target_url
 posted_text
 dry_run
 ```
+
+`vin` 列は既存互換のため列名を残しています。保存値は `車体番号:ZVW30-1234567` または `スレID:案件ABC123` の形式です。
 
 `relation_type`:
 
@@ -244,6 +276,24 @@ message_preview
 reason
 ```
 
+`invoice_reaction_posts`:
+
+```text
+processed_at
+source_channel_name
+source_channel_id
+source_message_ts
+source_url
+file_id
+file_name
+reaction_name
+target_channel_name
+target_channel_id
+posted_ts
+posted_text
+dry_run
+```
+
 ## 投稿文
 
 大親へ貼る場合:
@@ -263,11 +313,19 @@ reason
 <SlackスレッドURL>
 ```
 
+請求書チャンネルへ転送する場合:
+
+```text
+【PDFファイル名 2026-06-12】
+<元投稿のSlackリンク>
+```
+
 ## 安全ルール
 
 以下の場合は投稿しません。
 
 - 車体番号が取得できない
+- スレIDが取得できない
 - 大親が決定できない場合の子チャンネルから大親への投稿
 - 作成日時が不明
 - permalink取得失敗
@@ -279,9 +337,11 @@ reason
 
 ## トリガー確認
 
-Apps Script左メニューの `トリガー` で、`main` が毎日03:00に設定されていることを確認します。
+Apps Script左メニューの `トリガー` で、`scheduledMain` が毎日03:00、13:00、20:00付近に設定されていることを確認します。
 
-作り直したい場合は `createDailyTrigger()` を実行します。既存の `main()` トリガーを消してから作り直します。
+作り直したい場合は `createDailyTrigger()` を実行します。既存の `main()` / `scheduledMain()` トリガーを消してから作り直します。
+
+Apps Scriptの時刻トリガーは分単位で厳密には動きません。`nearMinute(0)` を指定しているため、各時刻の0分付近で動く想定です。
 
 ## エラー確認
 

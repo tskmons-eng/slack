@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-12 01:48 JST
+Last updated: 2026-06-12 02:30 JST
 
 ## Completed
 
@@ -37,6 +37,19 @@ Last updated: 2026-06-12 01:48 JST
 - Immediate duplicate verification exposed that the earlier timestamp-based duplicate check could miss already linked rows after Google Sheets numeric conversion. One duplicate Slack reply was posted during that verification.
 - Duplicate detection was hardened to compare source/target permalinks, tolerate Slack URL markup, and store `linked_threads` rows as text. A post-fix targeted dry run completed with `planned_count=0`, `posted_count=0`, `duplicate_skipped_count=1`, and `error_count=0`.
 
+## 2026-06-12 Version 26 Deployment
+
+- Scheduled handler changed to `scheduledMain()` so one time trigger run can execute both vehicle/thread linking and invoice forwarding.
+- Daily trigger target hours are configurable through `MAIN_TRIGGER_HOURS`, defaulting to `3,13,20`. Apps Script time triggers run near the selected minute, not exactly on the minute.
+- Thread linking now supports both `車体番号:` / `車台番号:` and `スレID:` labels. Values are normalized with NFKC, uppercasing, and whitespace removal before exact-match comparison.
+- `依頼＿ALL` to `依頼＿請求書` invoice forwarding was added for PDF root messages with the `rocket` reaction. Duplicate forwarding is tracked in `invoice_reaction_posts`.
+- Slack App manifest now includes `reactions:read` and `files:read`; the Slack App must be reinstalled after adding these scopes.
+- `clasp push` succeeded, and both the self setup web deployment and API executable deployment were updated to version 26.
+- Browser execution of `?action=setup` succeeded. The `invoice_reaction_posts` sheet exists with a valid header.
+- `?action=setup` status confirmed `MAIN_TRIGGER_HOURS=3,13,20`, `scheduled_handler=scheduledMain`, and `scheduled_trigger_count=3`.
+- Browser execution of `?action=test_logic` returned `ok=true`; the page showed generated parent duplicate, same-channel duplicate, child-to-parent, and thread ID action output.
+- Browser execution of `?action=invoice_dryrun` returned `ok=false` with `Slack channel not found or bot is not invited: 依頼＿ALL`. The invoice forwarding code is deployed, but Slack channel membership and/or channel-name visibility must be fixed before live invoice forwarding can be verified.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
@@ -56,7 +69,7 @@ Last updated: 2026-06-12 01:48 JST
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.
 - `LOOKBACK_DAYS=60`.
-- `main()` trigger exists: 1.
+- `scheduledMain()` triggers exist: 3.
 - `SLACK_BOT_TOKEN` is saved.
 
 ## Verified Slack App
@@ -90,4 +103,6 @@ The manifest includes:
 - `channels:history`
 - `groups:read`
 - `groups:history`
+- `reactions:read`
+- `files:read`
 - `chat:write`
