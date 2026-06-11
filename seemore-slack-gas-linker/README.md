@@ -107,7 +107,7 @@ Apps Scriptの関数選択で `setup` を選び、実行します。
 
 Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして開くと保存できます。保存後に `testSlackAuth()` と `testFindChannels()` 相当の疎通確認を実行します。
 
-デプロイ後の追加確認は、本人限定WebアプリURLで `?action=test_slack` と `?action=dryrun` を開いて実行できます。`dryrun` は `DRY_RUN=true` のまま投稿予定を `dry_run_logs` に保存します。短時間検証では `?action=dryrun&lookback_days=7&max_threads_per_channel=5` のように走査範囲と各チャンネルの確認件数を一時上書きできます。
+デプロイ後の追加確認は、本人限定WebアプリURLで `?action=test_slack`、`?action=test_logic`、`?action=dryrun` を開いて実行できます。`test_logic` は実Slackへ投稿せず、親子判定、代表スレッド選定、重複アクション、部分一致除外を合成データで確認します。`dryrun` は `DRY_RUN=true` のまま投稿予定を `dry_run_logs` に保存します。短時間検証では `?action=dryrun&lookback_days=7&max_threads_per_channel=5` のように走査範囲と各チャンネルの確認件数を一時上書きできます。
 
 `setup()` は以下を自動で行います。
 
@@ -137,11 +137,12 @@ Apps Script上で以下を実行できます。
 | 関数 | 内容 |
 | --- | --- |
 | `testExtractVins()` | 車体番号抽出と正規化の簡易テストを実行します。 |
+| `testResolveVinGroups()` | 合成データで親子判定、代表選定、部分一致除外を確認します。 |
 | `testSlackAuth()` | Slack API認証が通るか確認します。 |
 | `testFindChannels()` | 対象3チャンネルのIDが取得できるか確認します。 |
 | `testDryRunOnce()` | `DRY_RUN=true` 相当で1回処理し、投稿予定を `dry_run_logs` に保存します。 |
 
-`clasp run` が環境都合で使えない場合は、WebアプリURLの `?action=test_slack` と `?action=dryrun` で同じ確認を実行できます。検証時間を抑える場合は `?action=dryrun&lookback_days=7&max_threads_per_channel=5` を使います。
+`clasp run` が環境都合で使えない場合は、WebアプリURLの `?action=test_slack`、`?action=test_logic`、`?action=dryrun` で同じ確認を実行できます。検証時間を抑える場合は `?action=dryrun&lookback_days=7&max_threads_per_channel=5` を使います。
 
 ## DRY_RUN確認
 

@@ -84,6 +84,12 @@ function doGet(event) {
     });
   }
 
+  if (action === 'test_logic') {
+    return runHtmlJsonAction_(function() {
+      return testResolveVinGroups();
+    });
+  }
+
   if (action === 'dryrun') {
     var lookbackDaysOverride = parsePositiveInteger_(event.parameter.lookback_days, 0);
     var maxThreadsPerChannel = parsePositiveInteger_(event.parameter.max_threads_per_channel, 0);
@@ -98,7 +104,7 @@ function doGet(event) {
       '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
       '<p>状態確認は <code>?action=status</code> です。</p>' +
       '<p>Slack設定は <code>?action=slack</code> です。</p>' +
-      '<p>Slack疎通確認は <code>?action=test_slack</code>、dry runは <code>?action=dryrun</code> です。</p>'
+      '<p>Slack疎通確認は <code>?action=test_slack</code>、ロジック確認は <code>?action=test_logic</code>、dry runは <code>?action=dryrun</code> です。</p>'
     );
   }
 
@@ -582,7 +588,6 @@ function saveDryRunLog(record) {
 }
 
 function resolveVinGroups(vin, searchResults) {
-  var normalizedVin = normalizeVin(vin);
   var settings = getSettings();
   var parentChannelId = getChannelIdByName(settings.parentChannelName);
   var childChannels = settings.childChannelNames.map(function(name) {
@@ -592,6 +597,11 @@ function resolveVinGroups(vin, searchResults) {
     };
   });
 
+  return resolveVinGroupsFromChannels_(vin, searchResults, parentChannelId, childChannels);
+}
+
+function resolveVinGroupsFromChannels_(vin, searchResults, parentChannelId, childChannels) {
+  var normalizedVin = normalizeVin(vin);
   var targetThreads = (searchResults || []).filter(function(thread) {
     return thread.vins && thread.vins.indexOf(normalizedVin) !== -1;
   });
@@ -664,8 +674,69 @@ function testFindChannels() {
   return result;
 }
 
+function testResolveVinGroups() {
+  var parentChannelId = 'PARENT';
+  var childChannels = [
+    {name: 'carmore依頼', id: 'CHILD_CARMORE'},
+    {name: 'オールマシンサービス', id: 'CHILD_ALLMACHINE'}
+  ];
+  var threads = [
+    testThread_('PARENT', '依頼_車案件', '100.000001', ['ABC123'], 'https://slack.test/parent-old'),
+    testThread_('PARENT', '依頼_車案件', '200.000001', ['ABC123'], 'https://slack.test/parent-new'),
+    testThread_('CHILD_CARMORE', 'carmore依頼', '150.000001', ['ABC123'], 'https://slack.test/carmore-old'),
+    testThread_('CHILD_CARMORE', 'carmore依頼', '250.000001', ['ABC123'], 'https://slack.test/carmore-new'),
+    testThread_('CHILD_ALLMACHINE', 'オールマシンサービス', '175.000001', ['ABC123'], 'https://slack.test/allmachine-old'),
+    testThread_('CHILD_CARMORE', 'carmore依頼', '300.000001', ['ABC1234'], 'https://slack.test/partial-match')
+  ];
+
+  var groups = resolveVinGroupsFromChannels_('abc123', threads, parentChannelId, childChannels);
+  var actions = buildLinkActions_(groups);
+  var actionSummary = actions.map(function(action) {
+    return {
+      relationType: action.relationType,
+      sourceUrl: action.source.url,
+      targetUrl: action.target.url
+    };
+  });
+
+  assertTest_(groups.parent.url === 'https://slack.test/parent-old', 'oldest parent thread must be selected');
+  assertTest_(groups.parentDuplicates.length === 1, 'newer parent duplicate must be separated');
+  assertTest_(groups.childGroups[0].representative.url === 'https://slack.test/carmore-old', 'oldest carmore thread must be representative');
+  assertTest_(groups.childGroups[0].duplicates.length === 1, 'newer carmore duplicate must be separated');
+  assertTest_(groups.childGroups[1].representative.url === 'https://slack.test/allmachine-old', 'allmachine representative must be selected');
+  assertTest_(actions.filter(function(action) { return action.relationType === 'parent_duplicate'; }).length === 1, 'parent duplicate action count');
+  assertTest_(actions.filter(function(action) { return action.relationType === 'same_channel_duplicate'; }).length === 1, 'same channel duplicate action count');
+  assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 2, 'child to parent action count');
+  assertTest_(actions.every(function(action) { return action.source.url !== 'https://slack.test/partial-match'; }), 'partial VIN match must not be included');
+
+  Logger.log('testResolveVinGroups OK: ' + JSON.stringify(actionSummary));
+  return {
+    ok: true,
+    actions: actionSummary
+  };
+}
+
 function testDryRunOnce() {
   return runDryRun();
+}
+
+function testThread_(channelId, channelName, createdTs, vins, url) {
+  return {
+    channelId: channelId,
+    channelName: channelName,
+    configuredChannelName: channelName,
+    threadTs: createdTs,
+    createdTs: createdTs,
+    lastTs: createdTs,
+    vins: vins,
+    url: url
+  };
+}
+
+function assertTest_(condition, message) {
+  if (!condition) {
+    throw new Error('testResolveVinGroups failed: ' + message);
+  }
 }
 
 function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChannel) {
@@ -692,6 +763,19 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
     }
 
     var channels = getConfiguredChannels_(settings);
+    var parentChannel = channels.filter(function(channel) {
+      return channel.role === 'parent';
+    })[0];
+    var childChannels = channels
+      .filter(function(channel) {
+        return channel.role === 'child';
+      })
+      .map(function(channel) {
+        return {
+          name: channel.name,
+          id: channel.id
+        };
+      });
     var allThreads = [];
     channels.forEach(function(channel) {
       try {
@@ -722,7 +806,7 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
 
     vins.forEach(function(vin) {
       try {
-        var groups = resolveVinGroups(vin, allThreads);
+        var groups = resolveVinGroupsFromChannels_(vin, allThreads, parentChannel.id, childChannels);
         stats.child_matches_found += groups.childGroups.reduce(function(count, group) {
           return count + group.threads.length;
         }, 0);
@@ -765,17 +849,24 @@ function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChanne
 }
 
 function processVinGroup_(groups, dryRun, stats) {
+  buildLinkActions_(groups).forEach(function(action) {
+    executeLinkAction_(action, dryRun, stats);
+  });
+}
+
+function buildLinkActions_(groups) {
+  var actions = [];
   var parent = groups.parent;
 
   if (parent) {
     groups.parentDuplicates.forEach(function(duplicate) {
-      executeLinkAction_({
+      actions.push({
         vin: groups.vin,
         relationType: 'parent_duplicate',
         source: duplicate,
         target: parent,
         text: sameChannelMessage_(ensureThreadUrl_(duplicate))
-      }, dryRun, stats);
+      });
     });
   }
 
@@ -785,25 +876,27 @@ function processVinGroup_(groups, dryRun, stats) {
     }
 
     group.duplicates.forEach(function(duplicate) {
-      executeLinkAction_({
+      actions.push({
         vin: groups.vin,
         relationType: 'same_channel_duplicate',
         source: duplicate,
         target: group.representative,
         text: sameChannelMessage_(ensureThreadUrl_(duplicate))
-      }, dryRun, stats);
+      });
     });
 
     if (parent) {
-      executeLinkAction_({
+      actions.push({
         vin: groups.vin,
         relationType: 'child_to_parent',
         source: group.representative,
         target: parent,
         text: childToParentMessage_(group.channelName, ensureThreadUrl_(group.representative))
-      }, dryRun, stats);
+      });
     }
   });
+
+  return actions;
 }
 
 function executeLinkAction_(action, dryRun, stats) {
