@@ -14,7 +14,6 @@ oauth_config:
       - groups:read
       - groups:history
       - chat:write
-      - search:read
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: false

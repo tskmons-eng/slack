@@ -2,13 +2,12 @@ var APP_NAME = 'SEEMORE Slack車案件リンク管理';
 var SPREADSHEET_NAME = 'SEEMORE_Slack車案件リンク管理';
 var SPREADSHEET_ID_PROPERTY = 'SEEMORE_SLACK_LINKS_SPREADSHEET_ID';
 var SLACK_TOKEN_PROPERTY = 'SLACK_BOT_TOKEN';
-var MAX_SEARCH_PAGES = 10;
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
   TEAM_DOMAIN: '',
   PARENT_CHANNEL_NAME: '依頼_車案件',
-  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス SEEMORE',
+  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
   LOOKBACK_DAYS: '60',
   DRY_RUN: 'true'
 };
@@ -69,13 +68,28 @@ function setup() {
 function doGet(event) {
   var action = event && event.parameter ? event.parameter.action : '';
   if (action === 'status') {
-    return ContentService
-      .createTextOutput(JSON.stringify(getSetupStatus_(), null, 2))
-      .setMimeType(ContentService.MimeType.JSON);
+    return jsonOutput_(getSetupStatus_());
   }
 
   if (action === 'slack') {
     return HtmlService.createHtmlOutput(renderSlackSettingsPage_(null));
+  }
+
+  if (action === 'test_slack') {
+    return runHtmlJsonAction_(function() {
+      return {
+        auth: testSlackAuth(),
+        channels: testFindChannels()
+      };
+    });
+  }
+
+  if (action === 'dryrun') {
+    var lookbackDaysOverride = parsePositiveInteger_(event.parameter.lookback_days, 0);
+    var maxThreadsPerChannel = parsePositiveInteger_(event.parameter.max_threads_per_channel, 0);
+    return runHtmlJsonAction_(function() {
+      return runWithMode_(true, null, lookbackDaysOverride || null, maxThreadsPerChannel || null);
+    });
   }
 
   if (action !== 'setup') {
@@ -83,7 +97,8 @@ function doGet(event) {
       '<p>' + APP_NAME + '</p>' +
       '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
       '<p>状態確認は <code>?action=status</code> です。</p>' +
-      '<p>Slack設定は <code>?action=slack</code> です。</p>'
+      '<p>Slack設定は <code>?action=slack</code> です。</p>' +
+      '<p>Slack疎通確認は <code>?action=test_slack</code>、dry runは <code>?action=dryrun</code> です。</p>'
     );
   }
 
@@ -101,6 +116,33 @@ function doGet(event) {
     }) + '</pre>'
   ].join('');
   return HtmlService.createHtmlOutput(html);
+}
+
+function jsonOutput_(value) {
+  return ContentService
+    .createTextOutput(JSON.stringify(value, null, 2))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function htmlJsonOutput_(value) {
+  return HtmlService.createHtmlOutput(
+    '<pre>' + escapeHtml_(JSON.stringify(value, null, 2)) + '</pre>'
+  );
+}
+
+function runHtmlJsonAction_(callback) {
+  try {
+    return htmlJsonOutput_({
+      ok: true,
+      result: callback()
+    });
+  } catch (error) {
+    return htmlJsonOutput_({
+      ok: false,
+      error: error.message,
+      raw_response: error.rawResponse || ''
+    });
+  }
 }
 
 function doPost(event) {
@@ -330,7 +372,7 @@ function saveSettings(settings) {
     } else {
       value = DEFAULT_SETTINGS[key];
     }
-    upsertSetting_(sheet, key, value, settingMemo_(key));
+    upsertSetting_(sheet, key, normalizeSettingValue_(key, value), settingMemo_(key));
   });
 
   var token = stringValue_(readSettingsMap_(sheet).SLACK_BOT_TOKEN);
@@ -626,7 +668,7 @@ function testDryRunOnce() {
   return runDryRun();
 }
 
-function runWithMode_(dryRun, onlyVin) {
+function runWithMode_(dryRun, onlyVin, lookbackDaysOverride, maxThreadsPerChannel) {
   var startedAt = nowIso_();
   var stats = {
     started_at: startedAt,
@@ -653,7 +695,7 @@ function runWithMode_(dryRun, onlyVin) {
     var allThreads = [];
     channels.forEach(function(channel) {
       try {
-        var scan = getRecentThreadsWithStats_(channel.id, settings.lookbackDays);
+        var scan = getRecentThreadsWithStats_(channel.id, lookbackDaysOverride || settings.lookbackDays, maxThreadsPerChannel);
         stats.expired_skipped_count += scan.expiredSkipped;
         scan.threads.forEach(function(thread) {
           thread.role = channel.role;
@@ -835,13 +877,13 @@ function executeLinkAction_(action, dryRun, stats) {
   }
 }
 
-function getRecentThreadsWithStats_(channelId, lookbackDays) {
+function getRecentThreadsWithStats_(channelId, lookbackDays, maxThreads) {
   var cutoffTs = cutoffSlackTs_(lookbackDays);
   var threadTsMap = {};
   var expiredSkipped = 0;
 
-  collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap);
-  collectThreadCandidatesFromSearch_(channelId, threadTsMap);
+  collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap, maxThreads);
+  // Bot tokens cannot call search.messages, so this GAS scans joined channel history.
 
   var threads = [];
   Object.keys(threadTsMap).forEach(function(threadTs) {
@@ -890,7 +932,7 @@ function getRecentThreadsWithStats_(channelId, lookbackDays) {
   };
 }
 
-function collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap) {
+function collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap, maxThreads) {
   var cursor = '';
   do {
     var payload = {
@@ -904,74 +946,22 @@ function collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap) {
     }
     var response = slackApi('conversations.history', payload);
     (response.messages || []).forEach(function(message) {
+      if (maxThreads && Object.keys(threadTsMap).length >= maxThreads) {
+        return;
+      }
       var threadTs = message.thread_ts || message.ts;
       if (threadTs) {
         threadTsMap[threadTs] = true;
       }
     });
+    if (maxThreads && Object.keys(threadTsMap).length >= maxThreads) {
+      cursor = '';
+      break;
+    }
     cursor = response.response_metadata && response.response_metadata.next_cursor
       ? response.response_metadata.next_cursor
       : '';
   } while (cursor);
-}
-
-function collectThreadCandidatesFromSearch_(channelId, threadTsMap) {
-  ['車体番号', '車台番号'].forEach(function(keyword) {
-    for (var page = 1; page <= MAX_SEARCH_PAGES; page += 1) {
-      var response = slackApi('search.messages', {
-        query: keyword,
-        count: 100,
-        page: page,
-        sort: 'timestamp',
-        sort_dir: 'desc'
-      });
-      var matches = response.messages && response.messages.matches ? response.messages.matches : [];
-      matches.forEach(function(match) {
-        if (!searchResultBelongsToChannel_(match, channelId)) {
-          return;
-        }
-        var threadTs = threadTsFromSearchMatch_(match);
-        if (threadTs) {
-          threadTsMap[threadTs] = true;
-        }
-      });
-
-      var paging = response.messages && response.messages.paging ? response.messages.paging : null;
-      if (!paging || page >= Number(paging.pages || 1)) {
-        break;
-      }
-    }
-  });
-}
-
-function searchResultBelongsToChannel_(match, channelId) {
-  if (match.channel && match.channel.id) {
-    return match.channel.id === channelId;
-  }
-  if (match.channel_id) {
-    return match.channel_id === channelId;
-  }
-  if (match.channel && match.channel.name) {
-    var channel = getChannelById_(channelId);
-    return channel && channelNameMatches_(channel, match.channel.name);
-  }
-  if (match.channel_name) {
-    var channelByName = getChannelById_(channelId);
-    return channelByName && channelNameMatches_(channelByName, match.channel_name);
-  }
-  return false;
-}
-
-function threadTsFromSearchMatch_(match) {
-  if (match.thread_ts) {
-    return match.thread_ts;
-  }
-  var permalink = stringValue_(match.permalink);
-  var threadMatch = permalink.match(/[?&]thread_ts=([0-9.]+)/);
-  if (threadMatch) {
-    return decodeURIComponent(threadMatch[1]);
-  }
-  return match.ts || '';
 }
 
 function getConfiguredChannels_(settings) {
@@ -1116,10 +1106,20 @@ function settingMemo_(key) {
 }
 
 function settingOrDefault_(settingsMap, key) {
+  var value;
   if (settingsMap[key] !== undefined && settingsMap[key] !== '') {
-    return settingsMap[key];
+    value = settingsMap[key];
+  } else {
+    value = DEFAULT_SETTINGS[key];
   }
-  return DEFAULT_SETTINGS[key];
+  return normalizeSettingValue_(key, value);
+}
+
+function normalizeSettingValue_(key, value) {
+  if (key === 'CHILD_CHANNEL_NAMES') {
+    return stringValue_(value).replace(/オールマシンサービス\s+SEEMORE/g, 'オールマシンサービス');
+  }
+  return value;
 }
 
 function slackApiWithToken_(token, method, payload) {
