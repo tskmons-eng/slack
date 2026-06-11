@@ -3,12 +3,15 @@
 ## SEEMORE Slack 車案件 自動紐付け
 
 - Slack 車案件ツールは、既存の `メール転送/` Apps Script とは競合しない独立フォルダで管理する。
+- 今回の本命実装は `seemore-slack-gas-linker/` の Google Apps Script 版とし、既存の Python/SQLite 版 `seemore-slack-linker/` とは混ぜない。
+- ローカルPC、VPS、Python、SQLite は使わず、Google Apps Script + Slack API + Google スプレッドシートで完結させる。
+- 設定は `.env` ではなく `settings` シートで管理する。
 - AI判断や曖昧一致は使わず、車体番号の完全一致だけで紐付ける。
-- 初期状態は必ず `DRY_RUN=true` にし、本番投稿は `.env` で明示的に `DRY_RUN=false` に変えた時だけ行う。
-- 同じ子スレッドURLは、SQLite DB と親スレッド内の既存投稿の両方で重複確認して二重投稿しない。
+- 初期状態は必ず `DRY_RUN=true` にし、本番投稿は `settings` シートで明示的に `DRY_RUN=false` に変えた時だけ行う。
+- 同じスレッドURLは、`linked_threads` シートと投稿先Slackスレッド内の既存投稿の両方で重複確認して二重投稿しない。
 - 処理対象は最終更新から60日以内のスレッドだけにする。
 - Slack検索が失敗した場合は、勝手に全件クロールへ切り替えず、エラーとしてログ保存する。
-- Google Drive 配下など `.env` で指定した DB 保存先の親フォルダが存在しない場合、別場所へ代替保存しない。
+- 毎日03:00にGASトリガーで自動実行し、PCを閉じていても動く構成にする。
 - 誤投稿より未投稿を優先する。
 
 ## Gmail 転送
