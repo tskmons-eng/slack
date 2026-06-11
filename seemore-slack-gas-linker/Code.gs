@@ -98,6 +98,28 @@ function doGet(event) {
     });
   }
 
+  if (action === 'scan_labels') {
+    var scanLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
+    var scanMaxThreads = parsePositiveInteger_(event.parameter.max_threads_per_channel, 0);
+    var scanRole = stringValue_(event.parameter.channel_role || 'parent');
+    var scanChannelName = stringValue_(event.parameter.channel_name || '');
+    return runHtmlJsonAction_(function() {
+      return scanVinLabels_(scanRole, scanLookbackDays || null, scanMaxThreads || null, scanChannelName || null);
+    });
+  }
+
+  if (action === 'link_threads') {
+    var linkDryRunParam = stringValue_(event.parameter.dry_run);
+    var linkDryRun = linkDryRunParam === '' ? true : parseBoolean_(linkDryRunParam);
+    var sourceChannelName = stringValue_(event.parameter.source_channel_name || '');
+    var sourceThreadTs = stringValue_(event.parameter.source_thread_ts || '');
+    var targetThreadTs = stringValue_(event.parameter.target_thread_ts || '');
+    var confirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      return linkKnownThreads_(sourceChannelName, sourceThreadTs, targetThreadTs, linkDryRun, confirm);
+    });
+  }
+
   if (action !== 'setup') {
     return HtmlService.createHtmlOutput(
       '<p>' + APP_NAME + '</p>' +
@@ -505,7 +527,7 @@ function postThreadMessage(channelId, threadTs, text) {
   });
 }
 
-function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl) {
+function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl, targetUrl) {
   var sheet = createSheets().getSheetByName('linked_threads');
   var values = sheet.getDataRange().getValues();
   if (values.length <= 1) {
@@ -513,11 +535,13 @@ function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl) {
   }
   for (var i = 1; i < values.length; i += 1) {
     var row = values[i];
-    if (
+    var storedSourceUrl = normalizeSlackUrl_(row[6]);
+    var storedTargetUrl = normalizeSlackUrl_(row[10]);
+    var sameTargetByUrl = targetUrl && storedTargetUrl === normalizeSlackUrl_(targetUrl);
+    var sameTargetByTs =
       stringValue_(row[8]) === stringValue_(targetChannelId) &&
-      stringValue_(row[9]) === stringValue_(targetThreadTs) &&
-      stringValue_(row[6]) === stringValue_(sourceUrl)
-    ) {
+      normalizeSlackTsForCompare_(row[9]) === normalizeSlackTsForCompare_(targetThreadTs);
+    if (storedSourceUrl === normalizeSlackUrl_(sourceUrl) && (sameTargetByUrl || sameTargetByTs)) {
       return true;
     }
   }
@@ -527,13 +551,13 @@ function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl) {
 function threadAlreadyContainsUrl(channelId, threadTs, url) {
   var messages = getThreadMessages(channelId, threadTs);
   return messages.some(function(message) {
-    return stringValue_(message.text).indexOf(url) !== -1;
+    return textContainsSlackUrl_(message.text, url);
   });
 }
 
 function saveLinkedThread(record) {
   var sheet = createSheets().getSheetByName('linked_threads');
-  sheet.appendRow([
+  var row = [
     record.linked_at || nowIso_(),
     record.vin || '',
     record.relation_type || '',
@@ -547,7 +571,12 @@ function saveLinkedThread(record) {
     record.target_url || '',
     record.posted_text || '',
     String(Boolean(record.dry_run))
-  ]);
+  ].map(function(value) {
+    return stringValue_(value);
+  });
+  var rowIndex = sheet.getLastRow() + 1;
+  sheet.getRange(rowIndex, 1, 1, row.length).setNumberFormat('@');
+  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
 }
 
 function saveRunLog(record) {
@@ -922,7 +951,7 @@ function executeLinkAction_(action, dryRun, stats) {
     }
     stats.plannedKeys[key] = true;
 
-    if (isAlreadyLinked(action.target.channelId, action.target.threadTs, sourceUrl)) {
+    if (isAlreadyLinked(action.target.channelId, action.target.threadTs, sourceUrl, targetUrl)) {
       stats.duplicate_skipped_count += 1;
       return;
     }
@@ -1023,6 +1052,223 @@ function getRecentThreadsWithStats_(channelId, lookbackDays, maxThreads) {
     threads: threads,
     expiredSkipped: expiredSkipped
   };
+}
+
+function scanVinLabels_(channelRole, lookbackDaysOverride, maxThreadsPerChannel, channelNameFilter) {
+  createSheets();
+  var settings = getSettings();
+  if (!settings.slackBotToken) {
+    throw new Error('SLACK_BOT_TOKENが未設定です。settingsシートへBot Tokenを入力してください。');
+  }
+
+  var role = channelRole === 'all' ? 'all' : channelRole;
+  var channels = getConfiguredChannels_(settings).filter(function(channel) {
+    if (channelNameFilter && channel.name !== channelNameFilter) {
+      return false;
+    }
+    return role === 'all' || channel.role === role;
+  });
+  var lookbackDays = lookbackDaysOverride || settings.lookbackDays;
+  var result = {
+    checked_at: nowIso_(),
+    channel_role: role,
+    lookback_days: lookbackDays,
+    max_threads_per_channel: maxThreadsPerChannel || '',
+    channels: [],
+    total_threads_scanned: 0,
+    total_label_threads: 0,
+    total_vin_threads: 0,
+    vins: []
+  };
+  var seenVins = {};
+
+  channels.forEach(function(channel) {
+    var scan = scanChannelVinLabels_(channel, lookbackDays, maxThreadsPerChannel);
+    result.channels.push(scan);
+    result.total_threads_scanned += scan.threads_scanned;
+    result.total_label_threads += scan.label_threads;
+    result.total_vin_threads += scan.vin_threads;
+    scan.samples.forEach(function(sample) {
+      (sample.vins || []).forEach(function(vin) {
+        if (!seenVins[vin]) {
+          seenVins[vin] = true;
+          result.vins.push(vin);
+        }
+      });
+    });
+  });
+
+  result.vins.sort();
+  return result;
+}
+
+function scanChannelVinLabels_(channel, lookbackDays, maxThreads) {
+  var cutoffTs = cutoffSlackTs_(lookbackDays);
+  var threadTsMap = {};
+  collectThreadCandidatesFromHistory_(channel.id, cutoffTs, threadTsMap, maxThreads);
+
+  var summary = {
+    channel_name: channel.name,
+    channel_id: channel.id,
+    role: channel.role,
+    threads_scanned: 0,
+    label_threads: 0,
+    vin_threads: 0,
+    samples: []
+  };
+
+  Object.keys(threadTsMap).forEach(function(threadTs) {
+    try {
+      var messages = getThreadMessages(channel.id, threadTs);
+      if (!messages.length) {
+        return;
+      }
+      summary.threads_scanned += 1;
+      var text = messages.map(function(message) {
+        return stringValue_(message.text);
+      }).join('\n');
+      var hasLabel = /(?:車体番号|車台番号)\s*[:：]/.test(text);
+      var vins = extractVins(text);
+      if (hasLabel) {
+        summary.label_threads += 1;
+      }
+      if (vins.length) {
+        summary.vin_threads += 1;
+      }
+      if (hasLabel || vins.length) {
+        var root = messages[0];
+        var lastTs = messages.reduce(function(maxTs, message) {
+          return Math.max(maxTs, slackTsNumber_(message.ts));
+        }, slackTsNumber_(root.ts));
+        summary.samples.push({
+          thread_ts: root.thread_ts || root.ts,
+          created_ts: root.ts,
+          last_ts: String(lastTs),
+          has_label: hasLabel,
+          vins: vins
+        });
+      }
+    } catch (error) {
+      saveError('scanVinLabels:' + channel.name + ':' + threadTs, error);
+    }
+  });
+
+  return summary;
+}
+
+function linkKnownThreads_(sourceChannelName, sourceThreadTs, targetThreadTs, dryRun, confirm) {
+  createSheets();
+  var settings = getSettings();
+  if (!settings.slackBotToken) {
+    throw new Error('SLACK_BOT_TOKENが未設定です。settingsシートへBot Tokenを入力してください。');
+  }
+  if (!sourceChannelName || !sourceThreadTs || !targetThreadTs) {
+    throw new Error('source_channel_name、source_thread_ts、target_thread_tsを指定してください。');
+  }
+  if (!dryRun && confirm !== 'RUN_PRODUCTION') {
+    throw new Error('本番投稿にはconfirm=RUN_PRODUCTIONが必要です。');
+  }
+
+  var channels = getConfiguredChannels_(settings);
+  var parentChannel = channels.filter(function(channel) {
+    return channel.role === 'parent';
+  })[0];
+  var sourceChannel = channels.filter(function(channel) {
+    return channel.name === sourceChannelName;
+  })[0];
+  if (!parentChannel) {
+    throw new Error('親チャンネル設定が見つかりません。');
+  }
+  if (!sourceChannel) {
+    throw new Error('source_channel_nameが設定済みチャンネルに一致しません: ' + sourceChannelName);
+  }
+  if (sourceChannel.role !== 'child') {
+    throw new Error('source_channel_nameには子チャンネルを指定してください。');
+  }
+
+  var sourceThread = readThreadForLink_(sourceChannel, sourceThreadTs);
+  var targetThread = readThreadForLink_(parentChannel, targetThreadTs);
+  var sharedVin = findSharedVin_(sourceThread.vins, targetThread.vins);
+  if (!sharedVin) {
+    throw new Error('指定された2スレッドに共通する車体番号が見つかりません。');
+  }
+
+  var stats = {
+    started_at: nowIso_(),
+    dry_run: Boolean(dryRun),
+    parent_threads_checked: 1,
+    vins_found: 1,
+    child_matches_found: 1,
+    posted_count: 0,
+    planned_count: 0,
+    duplicate_skipped_count: 0,
+    expired_skipped_count: 0,
+    error_count: 0,
+    plannedKeys: {}
+  };
+  var action = {
+    vin: sharedVin,
+    relationType: 'child_to_parent',
+    source: sourceThread,
+    target: targetThread,
+    text: childToParentMessage_(sourceChannel.name, ensureThreadUrl_(sourceThread))
+  };
+  executeLinkAction_(action, Boolean(dryRun), stats);
+  saveRunLog({
+    started_at: stats.started_at,
+    finished_at: nowIso_(),
+    dry_run: dryRun,
+    parent_threads_checked: stats.parent_threads_checked,
+    vins_found: stats.vins_found,
+    child_matches_found: stats.child_matches_found,
+    posted_count: stats.posted_count,
+    duplicate_skipped_count: stats.duplicate_skipped_count,
+    expired_skipped_count: stats.expired_skipped_count,
+    error_count: stats.error_count,
+    memo: dryRun ? 'targeted dry_run planned_count=' + stats.planned_count : 'targeted production run'
+  });
+  return stats;
+}
+
+function readThreadForLink_(channel, threadTs) {
+  var messages = getThreadMessages(channel.id, threadTs);
+  if (!messages.length) {
+    throw new Error('指定スレッドを取得できませんでした: ' + channel.name + ' ' + threadTs);
+  }
+  var root = messages[0];
+  var text = messages.map(function(message) {
+    return stringValue_(message.text);
+  }).join('\n');
+  var vins = extractVins(text);
+  if (!vins.length) {
+    throw new Error('指定スレッドから車体番号を抽出できませんでした: ' + channel.name + ' ' + threadTs);
+  }
+  var lastTs = messages.reduce(function(maxTs, message) {
+    return Math.max(maxTs, slackTsNumber_(message.ts));
+  }, slackTsNumber_(root.ts));
+  return {
+    channelId: channel.id,
+    channelName: channel.name,
+    configuredChannelName: channel.name,
+    threadTs: root.thread_ts || root.ts,
+    createdTs: root.ts,
+    lastTs: String(lastTs),
+    vins: vins,
+    url: getPermalink(channel.id, root.thread_ts || root.ts)
+  };
+}
+
+function findSharedVin_(sourceVins, targetVins) {
+  var targetMap = {};
+  (targetVins || []).forEach(function(vin) {
+    targetMap[vin] = true;
+  });
+  for (var i = 0; i < (sourceVins || []).length; i += 1) {
+    if (targetMap[sourceVins[i]]) {
+      return sourceVins[i];
+    }
+  }
+  return '';
 }
 
 function collectThreadCandidatesFromHistory_(channelId, cutoffTs, threadTsMap, maxThreads) {
@@ -1357,6 +1603,44 @@ function sameChannelMessage_(url) {
 
 function compareCreatedTs_(a, b) {
   return slackTsNumber_(a.createdTs) - slackTsNumber_(b.createdTs);
+}
+
+function normalizeSlackUrl_(url) {
+  var value = stringValue_(url).trim();
+  value = value.replace(/[<>]/g, '');
+  if (value.indexOf('|') !== -1) {
+    value = value.split('|')[0];
+  }
+  return value.replace(/\/+$/, '');
+}
+
+function textContainsSlackUrl_(text, url) {
+  var value = stringValue_(text);
+  var normalizedUrl = normalizeSlackUrl_(url);
+  if (!normalizedUrl) {
+    return false;
+  }
+  if (value.indexOf(normalizedUrl) !== -1) {
+    return true;
+  }
+  if (value.indexOf(normalizedUrl.replace(/&/g, '&amp;')) !== -1) {
+    return true;
+  }
+  var withoutProtocol = normalizedUrl.replace(/^https?:\/\//, '');
+  return withoutProtocol !== normalizedUrl && value.indexOf(withoutProtocol) !== -1;
+}
+
+function normalizeSlackTsForCompare_(ts) {
+  var value = stringValue_(ts).trim();
+  if (!value) {
+    return '';
+  }
+  if (/^\d+(?:\.\d+)?$/.test(value)) {
+    var parts = value.split('.');
+    var fraction = parts[1] || '';
+    return parts[0] + '.' + (fraction + '000000').slice(0, 6);
+  }
+  return value;
 }
 
 function cutoffSlackTs_(lookbackDays) {

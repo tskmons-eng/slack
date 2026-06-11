@@ -144,6 +144,21 @@ Apps Script上で以下を実行できます。
 
 `clasp run` が環境都合で使えない場合は、WebアプリURLの `?action=test_slack`、`?action=test_logic`、`?action=dryrun` で同じ確認を実行できます。検証時間を抑える場合は `?action=dryrun&lookback_days=7&max_threads_per_channel=5` を使います。
 
+## Web診断アクション
+
+本人限定WebアプリURLでは、通常の `dryrun` が広範囲走査で時間上限に近い場合に備え、以下の診断アクションも使えます。
+
+- `?action=scan_labels&channel_role=parent&lookback_days=365&max_threads_per_channel=300`
+  - 指定ロールのチャンネルを走査し、`車体番号:` / `車台番号:` ラベルを含むスレッド数とVIN候補を確認します。
+- `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
+  - `channel_name` を指定すると、対象チャンネルだけを診断します。
+- `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
+  - 既知の子スレッドと親スレッドを再読し、両方に共通VINがある場合だけ投稿予定を確認します。
+- `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=false&confirm=RUN_PRODUCTION`
+  - 既知ペアを1回だけ本番投稿します。本番投稿には `confirm=RUN_PRODUCTION` が必須です。
+
+重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
+
 ## DRY_RUN確認
 
 初期状態では `DRY_RUN=true` です。
