@@ -74,11 +74,16 @@ function doGet(event) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  if (action === 'slack') {
+    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(null));
+  }
+
   if (action !== 'setup') {
     return HtmlService.createHtmlOutput(
       '<p>' + APP_NAME + '</p>' +
       '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
-      '<p>状態確認は <code>?action=status</code> です。</p>'
+      '<p>状態確認は <code>?action=status</code> です。</p>' +
+      '<p>Slack設定は <code>?action=slack</code> です。</p>'
     );
   }
 
@@ -96,6 +101,50 @@ function doGet(event) {
     }) + '</pre>'
   ].join('');
   return HtmlService.createHtmlOutput(html);
+}
+
+function doPost(event) {
+  var action = event && event.parameter ? event.parameter.action : '';
+  if (action !== 'save_slack_token') {
+    return HtmlService.createHtmlOutput('<p>Unsupported action.</p>');
+  }
+
+  var token = stringValue_(event.parameter.SLACK_BOT_TOKEN).trim();
+  var result = {
+    saved: false,
+    auth_ok: false,
+    channels_ok: false,
+    messages: []
+  };
+
+  if (!/^xoxb-[A-Za-z0-9-]+$/.test(token)) {
+    result.messages.push('SLACK_BOT_TOKENはxoxb-で始まるBot Tokenを入力してください。');
+    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result));
+  }
+
+  saveSlackBotToken_(token);
+  result.saved = true;
+  result.messages.push('SLACK_BOT_TOKENをsettingsシートとScript Propertiesへ保存しました。');
+
+  try {
+    var authResponse = testSlackAuth();
+    result.auth_ok = true;
+    result.messages.push('Slack API認証OK: team=' + authResponse.team + ', user=' + authResponse.user);
+  } catch (error) {
+    result.messages.push('Slack API認証NG: ' + error.message);
+  }
+
+  try {
+    var channels = testFindChannels();
+    result.channels_ok = true;
+    result.messages.push('チャンネル確認OK: ' + channels.map(function(channel) {
+      return channel.name + '=' + channel.id;
+    }).join(', '));
+  } catch (error) {
+    result.messages.push('チャンネル確認NG: ' + error.message);
+  }
+
+  return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result));
 }
 
 function main() {
@@ -165,6 +214,39 @@ function getSetupStatus_() {
   status.main_daily_trigger_found = triggers.length > 0;
 
   return status;
+}
+
+function renderSlackSettingsPage_(result) {
+  var actionUrl = ScriptApp.getService().getUrl();
+  var status = getSetupStatus_();
+  var messages = result && result.messages ? result.messages : [];
+  var statusText = [
+    'Spreadsheet: ' + (status.spreadsheet_found ? 'OK' : 'NG'),
+    'SLACK_BOT_TOKEN: ' + (status.settings.has_slack_bot_token ? 'saved' : 'empty'),
+    'DRY_RUN: ' + status.settings.dry_run,
+    'Trigger: ' + (status.main_daily_trigger_found ? 'OK' : 'NG')
+  ].join('\n');
+
+  var messageHtml = messages.length
+    ? '<ul>' + messages.map(function(message) {
+      return '<li>' + escapeHtml_(message) + '</li>';
+    }).join('') + '</ul>'
+    : '';
+
+  return [
+    '<h1>' + escapeHtml_(APP_NAME) + '</h1>',
+    '<h2>Slack Bot Token設定</h2>',
+    '<p>Slack AppのBot User OAuth Tokenを入力してください。Tokenは画面へ再表示しません。</p>',
+    messageHtml,
+    '<form method="post" action="' + escapeHtml_(actionUrl) + '">',
+    '<input type="hidden" name="action" value="save_slack_token">',
+    '<p><input type="password" name="SLACK_BOT_TOKEN" placeholder="xoxb-..." style="width: 420px;"></p>',
+    '<p><button type="submit">保存してSlack疎通確認</button></p>',
+    '</form>',
+    '<h2>現在状態</h2>',
+    '<pre>' + escapeHtml_(statusText) + '</pre>',
+    '<p><a href="' + escapeHtml_(actionUrl) + '?action=status" target="_blank">JSON状態確認</a></p>'
+  ].join('');
 }
 
 function createSheets() {
@@ -255,6 +337,13 @@ function saveSettings(settings) {
   if (token) {
     PropertiesService.getScriptProperties().setProperty(SLACK_TOKEN_PROPERTY, token);
   }
+}
+
+function saveSlackBotToken_(token) {
+  var spreadsheet = createSheets();
+  var sheet = spreadsheet.getSheetByName('settings');
+  upsertSetting_(sheet, 'SLACK_BOT_TOKEN', token, settingMemo_('SLACK_BOT_TOKEN'));
+  PropertiesService.getScriptProperties().setProperty(SLACK_TOKEN_PROPERTY, token);
 }
 
 function slackApi(method, payload) {
@@ -1197,6 +1286,18 @@ function parsePositiveInteger_(value, fallback) {
 
 function stringValue_(value) {
   return value === null || value === undefined ? '' : String(value);
+}
+
+function escapeHtml_(value) {
+  return stringValue_(value).replace(/[<>&"']/g, function(char) {
+    return {
+      '<': '&lt;',
+      '>': '&gt;',
+      '&': '&amp;',
+      '"': '&quot;',
+      "'": '&#39;'
+    }[char];
+  });
 }
 
 function nowIso_() {

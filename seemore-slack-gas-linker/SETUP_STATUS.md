@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-11 22:50 JST
+Last updated: 2026-06-11 22:58 JST
 
 ## Completed
 
@@ -11,38 +11,38 @@ Last updated: 2026-06-11 22:50 JST
 - Versioned deployments were created.
 - A self-only web setup endpoint was deployed.
 - The self-only web setup endpoint was updated to version 4 with `?action=status`.
+- The setup endpoint was authorized and executed successfully.
+- The required spreadsheet, sheets, settings defaults, and `main()` trigger were verified through `?action=status`.
+- A Slack settings endpoint was deployed at `?action=slack`.
+- The Slack settings form was verified with an invalid token; validation prevented saving.
+- The Slack App manifest was copied to the Windows clipboard for pasting into Slack's app manifest flow.
 - Slack App manifest was prepared at `slack-app-manifest.yml`.
 
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 4
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 5
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
+- Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
 
-## Waiting On User Authorization
+## Current Verified Setup
 
-Chrome is currently showing `Authorization needed`.
-
-The status URL also returns the Google `Authorization needed` page until the user grants the script permissions.
-
-User action required:
-
-1. In the Chrome authorization window, continue the Google permission flow.
-2. Allow the script permissions.
-3. Wait for the setup completion page.
-
-After authorization, the script should create the spreadsheet `SEEMORE_Slack車案件リンク管理`, initialize the required sheets, and create the daily 03:00 trigger.
+- Spreadsheet exists: `1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s`
+- Spreadsheet URL: `https://docs.google.com/spreadsheets/d/1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s/edit`
+- Required sheets exist with valid headers.
+- `DRY_RUN=true`.
+- `PARENT_CHANNEL_NAME=依頼_車案件`.
+- `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス SEEMORE`.
+- `LOOKBACK_DAYS=60`.
+- `main()` trigger exists: 1.
+- `SLACK_BOT_TOKEN` is not saved yet.
 
 ## Next Verification
 
-After the user authorizes the script, verify:
+After the Slack App is created and the Bot Token is saved, verify:
 
-- Google Drive contains `SEEMORE_Slack車案件リンク管理`.
-- The spreadsheet has `settings`, `linked_threads`, `run_logs`, `errors`, and `dry_run_logs`.
-- `settings` contains the default values and `DRY_RUN=true`.
-- Apps Script triggers include daily `main()` around 03:00.
 - `SLACK_BOT_TOKEN` is entered and `testSlackAuth()` passes.
 - `testFindChannels()` finds `依頼_車案件`, `carmore依頼`, and `オールマシンサービス SEEMORE`.
 
