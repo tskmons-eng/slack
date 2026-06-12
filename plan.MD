@@ -50,6 +50,7 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 - 車案件の紐付け返信と請求書転送の元投稿リンクは、URL文字列だけでなくSlack上のサムネイル/リンクプレビュー表示を優先する。
 - Slack API投稿時は `unfurl_links=true` / `unfurl_media=true` にし、`chat.getPermalink` の `cid=` 型URLは手動コピーに近い `channel=` / `message_ts=` 付きURLへ整形する。
+- Slack内部リンクはBot投稿だと手動共有と同じネイティブプレビューにならない場合があるため、本文URLをリンクラベル化し、Bot側で元投稿カードを添付する。
 
 ## 2026-06-12 Schedule Update
 
