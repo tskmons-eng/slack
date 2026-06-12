@@ -146,7 +146,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |
 | `DRY_RUN` | `true` | `true` の間は車案件の自動紐付けをSlackへ投稿しません。 |
-| `MAIN_TRIGGER_HOURS` | `3,13,20` | `scheduledMain()` を実行する時刻です。Apps Scriptの仕様上、分単位ぴったりではなく指定時刻付近で動きます。 |
+| `MAIN_TRIGGER_HOURS` | `3,10,13,16,20` | `scheduledMain()` を実行する時刻です。Apps Scriptの仕様上、分単位ぴったりではなく指定時刻付近で動きます。 |
 | `INVOICE_FORWARD_ENABLED` | `true` | ロケットリアクション付きPDF投稿の請求書転送を有効にします。 |
 | `INVOICE_SOURCE_CHANNEL_NAME` | `依頼＿ALL` | PDFとロケットリアクションを確認するチャンネル名です。 |
 | `INVOICE_TARGET_CHANNEL_NAME` | `依頼＿請求書` | 請求書転送先チャンネル名です。 |

@@ -50,3 +50,8 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 - 車案件の紐付け返信と請求書転送の元投稿リンクは、URL文字列だけでなくSlack上のサムネイル/リンクプレビュー表示を優先する。
 - Slack API投稿時は `unfurl_links=true` / `unfurl_media=true` にし、`chat.getPermalink` の `cid=` 型URLは手動コピーに近い `channel=` / `message_ts=` 付きURLへ整形する。
+
+## 2026-06-12 Schedule Update
+
+- 定期実行は1日5回、`MAIN_TRIGGER_HOURS=3,10,13,16,20` とする。
+- Web管理アクション `?action=set_schedule&hours=...&confirm=UPDATE_SCHEDULE` は `MAIN_TRIGGER_HOURS` だけを更新し、`scheduledMain()` のトリガーを作り直す。

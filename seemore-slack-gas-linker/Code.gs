@@ -4,6 +4,7 @@ var SPREADSHEET_ID_PROPERTY = 'SEEMORE_SLACK_LINKS_SPREADSHEET_ID';
 var SLACK_TOKEN_PROPERTY = 'SLACK_BOT_TOKEN';
 var SCHEDULED_HANDLER_FUNCTION = 'scheduledMain';
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
+var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
@@ -12,7 +13,7 @@ var DEFAULT_SETTINGS = {
   CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
   LOOKBACK_DAYS: '60',
   DRY_RUN: 'true',
-  MAIN_TRIGGER_HOURS: '3,13,20',
+  MAIN_TRIGGER_HOURS: '3,10,13,16,20',
   INVOICE_FORWARD_ENABLED: 'true',
   INVOICE_SOURCE_CHANNEL_NAME: '依頼＿ALL',
   INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
@@ -95,6 +96,14 @@ function doGet(event) {
   var action = event && event.parameter ? event.parameter.action : '';
   if (action === 'status') {
     return jsonOutput_(getSetupStatus_());
+  }
+
+  if (action === 'set_schedule') {
+    var scheduleHours = stringValue_(event.parameter.hours || '');
+    var scheduleConfirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      return updateMainTriggerHours_(scheduleHours, scheduleConfirm);
+    });
   }
 
   if (action === 'slack') {
@@ -330,7 +339,8 @@ function getSetupStatus_() {
       invoice_target_channel_name: '',
       invoice_reaction_name: '',
       invoice_lookback_days: '',
-      invoice_history_limit: ''
+      invoice_history_limit: '',
+      invoice_reply_thread_limit: ''
     },
     scheduled_handler: SCHEDULED_HANDLER_FUNCTION,
     scheduled_trigger_count: 0,
@@ -443,6 +453,22 @@ function createDailyTrigger() {
       .create();
   });
   Logger.log(SCHEDULED_HANDLER_FUNCTION + '()の毎日トリガーを作成しました: ' + settings.mainTriggerHours.join(','));
+}
+
+function updateMainTriggerHours_(hoursValue, confirm) {
+  if (confirm !== SCHEDULE_UPDATE_CONFIRM_TOKEN) {
+    throw new Error('スケジュール更新には confirm=' + SCHEDULE_UPDATE_CONFIRM_TOKEN + ' が必要です。');
+  }
+
+  var hours = parseTriggerHoursStrict_(hoursValue);
+  var spreadsheet = createSheets();
+  var settingsSheet = spreadsheet.getSheetByName('settings');
+  upsertSetting_(settingsSheet, 'MAIN_TRIGGER_HOURS', hours.join(','), settingMemo_('MAIN_TRIGGER_HOURS'));
+  createDailyTrigger();
+
+  var status = getSetupStatus_();
+  status.updated_main_trigger_hours = hours.join(',');
+  return status;
 }
 
 function deleteTriggers() {
@@ -1986,7 +2012,7 @@ function settingMemo_(key) {
     CHILD_CHANNEL_NAMES: '子チャンネル名をカンマ区切りで指定します。',
     LOOKBACK_DAYS: '最終更新日時がこの日数以内のスレッドだけ対象にします。',
     DRY_RUN: 'trueなら車案件の紐付けをSlackへ投稿せずdry_run_logsだけ保存します。',
-    MAIN_TRIGGER_HOURS: 'scheduledMain()を毎日実行する時刻です。0-23時をカンマ区切りで指定します。例: 3,13,20',
+    MAIN_TRIGGER_HOURS: 'scheduledMain()を毎日実行する時刻です。0-23時をカンマ区切りで指定します。例: 3,10,13,16,20',
     INVOICE_FORWARD_ENABLED: 'trueならロケットリアクション付きPDF投稿を請求書チャンネルへ転送します。',
     INVOICE_SOURCE_CHANNEL_NAME: 'ロケットリアクション付きPDF投稿を監視するチャンネル名です。',
     INVOICE_TARGET_CHANNEL_NAME: '請求書転送先チャンネル名です。',
@@ -2312,6 +2338,36 @@ function parseTriggerHours_(value) {
   }
   return DEFAULT_SETTINGS.MAIN_TRIGGER_HOURS.split(',').map(function(part) {
     return parseInt(part, 10);
+  });
+}
+
+function parseTriggerHoursStrict_(value) {
+  var seen = {};
+  var hours = [];
+  normalizeUnicode_(value)
+    .split(',')
+    .forEach(function(part) {
+      var text = part.trim();
+      if (!text) {
+        return;
+      }
+      if (!/^\d{1,2}$/.test(text)) {
+        throw new Error('MAIN_TRIGGER_HOURSに0-23の時刻だけをカンマ区切りで指定してください: ' + text);
+      }
+      var hour = parseInt(text, 10);
+      if (hour < 0 || hour > 23) {
+        throw new Error('MAIN_TRIGGER_HOURSは0-23の範囲で指定してください: ' + text);
+      }
+      if (!seen[hour]) {
+        seen[hour] = true;
+        hours.push(hour);
+      }
+    });
+  if (!hours.length) {
+    throw new Error('MAIN_TRIGGER_HOURSを1つ以上指定してください。');
+  }
+  return hours.sort(function(a, b) {
+    return a - b;
   });
 }
 
