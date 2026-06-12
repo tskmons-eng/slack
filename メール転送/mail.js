@@ -135,7 +135,7 @@ function removeGmailToSlackTrigger() {
 }
 
 function buildGmailThreadUrl_(thread) {
-  return `https://mail.google.com/mail/?authuser=${encodeURIComponent("seemore.co.ltd@gmail.com")}#inbox/${thread.getId()}`;
+  return `https://mail.google.com/mail/u/0/#all/${thread.getId()}`;
 }
 
 function slackLinkText_(url, label) {

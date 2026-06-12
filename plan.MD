@@ -68,5 +68,5 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
-- Gmail UI URL は `message.getId()` ではなく `thread.getId()` を使い、`authuser=seemore.co.ltd@gmail.com` を指定してスレッドを開く。
+- Gmail UI URL は `message.getId()` ではなく `thread.getId()` を使い、Slack経由でも崩れにくい `https://mail.google.com/mail/u/0/#all/{threadId}` 形式でスレッドを開く。
 - Slack通知内のリンク行は1行だけにし、`メールを開く` の表示リンクにする。余計な検索リンクや「開けない時」行は出さない。
