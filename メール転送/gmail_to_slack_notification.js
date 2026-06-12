@@ -1,10 +1,15 @@
+/**
+ * Gmail -> Slack notifier for Google Apps Script.
+ *
+ * Run this project under seemore.co.ltd@gmail.com.
+ * Store the Slack incoming webhook URL in Script Properties as SLACK_WEBHOOK_URL.
+ */
 function forwardLabeledGmailToSlack() {
   const EXPECTED_GMAIL_ACCOUNT = "seemore.co.ltd@gmail.com";
   const DONE_LABEL = "slack転送済み";
   const WEBHOOK_URL = getSlackWebhookUrl_();
   assertExpectedGmailAccount_(EXPECTED_GMAIL_ACCOUNT);
 
-  // 2週間以内・受信トレイ・転送済み除外・自分の送信除外・個人宛メール除外・セキュリティ通知除外
   const query = [
     "in:inbox",
     "newer_than:14d",
@@ -36,9 +41,9 @@ function forwardLabeledGmailToSlack() {
 
   const threads = GmailApp.search(query, 0, 50);
 
-  threads.forEach(thread => {
+  threads.forEach(function(thread) {
     const messages = thread.getMessages();
-    const message = messages[messages.length - 1]; // 最新メールだけ送る
+    const message = messages[messages.length - 1];
 
     const subject = message.getSubject() || "(件名なし)";
     const from = message.getFrom() || "";
@@ -47,7 +52,7 @@ function forwardLabeledGmailToSlack() {
     const body = (message.getPlainBody() || "")
       .replace(/\s+/g, " ")
       .trim();
-    const excerpt = body.slice(0, 300) + (body.length > 300 ? "…" : "");
+    const excerpt = body.slice(0, 300) + (body.length > 300 ? "..." : "");
 
     const gmailUrl = buildGmailThreadUrl_(thread);
     const fallbackGmailUrl = buildGmailSearchUrl_(message);
@@ -55,28 +60,26 @@ function forwardLabeledGmailToSlack() {
       (fallbackGmailUrl ? "\n*開けない時:* " + slackLinkText_(fallbackGmailUrl, "検索で開く") : "");
 
     const text = [
-      "📩 *Gmail通知*",
+      "*Gmail通知*",
       `*件名:* ${subject}`,
       `*送信元:* ${from}`,
       `*日時:* ${date}`,
       `*リンク:* ${shortUrl}`,
-      "─────────────",
+      "-------------",
       excerpt
     ].join("\n");
-
-    const payload = { text };
 
     const res = UrlFetchApp.fetch(WEBHOOK_URL, {
       method: "post",
       contentType: "application/json",
-      payload: JSON.stringify(payload),
+      payload: JSON.stringify({ text: text }),
       muteHttpExceptions: true
     });
 
     if (res.getResponseCode() === 200) {
       thread.addLabel(doneLabel);
     } else {
-      Logger.log(`Slack送信失敗: ${res.getResponseCode()} ${res.getContentText()}`);
+      Logger.log("Slack送信失敗: " + res.getResponseCode() + " " + res.getContentText());
     }
   });
 }
@@ -100,13 +103,13 @@ function removeGmailToSlackTrigger() {
 }
 
 function buildGmailThreadUrl_(thread) {
-  return `https://mail.google.com/mail/u/0/#all/${thread.getId()}`;
+  return "https://mail.google.com/mail/u/0/#all/" + thread.getId();
 }
 
 function buildGmailSearchUrl_(message) {
   const rfc822MessageId = getRfc822MessageId_(message);
   if (!rfc822MessageId) return "";
-  return `https://mail.google.com/mail/u/0/#search/${encodeURIComponent("rfc822msgid:" + rfc822MessageId)}`;
+  return "https://mail.google.com/mail/u/0/#search/" + encodeURIComponent("rfc822msgid:" + rfc822MessageId);
 }
 
 function getRfc822MessageId_(message) {
@@ -118,7 +121,7 @@ function getRfc822MessageId_(message) {
 }
 
 function slackLinkText_(url, label) {
-  return `<${url}|${label}>`;
+  return "<" + url + "|" + String(label || "リンク").replace(/[<>|]/g, " ").trim() + ">";
 }
 
 function getSlackWebhookUrl_() {

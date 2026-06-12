@@ -38,3 +38,9 @@
 ## Slack Schedule
 
 - 車案件紐付けと請求書転送の定期チェックは、当面1日5回の `3,10,13,16,20` 時台を基準にする。
+
+## Gmail Slack Notification Account
+
+- `tsk.mons@gmail.com` から `seemore.co.ltd@gmail.com` への既存Gmail転送は残す。
+- GmailからSlackへの通知は `seemore.co.ltd@gmail.com` のメールボックスを対象にし、個人Gmailで実行された場合は停止する。
+- Slack通知では、`tsk.mons@gmail.com` 宛の個人メールを通知対象から除外する。
