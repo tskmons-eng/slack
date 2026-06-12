@@ -1,6 +1,3 @@
-# Existing Slack script contains a live Slack webhook URL.
-メール転送/mail.js
-
 # SEEMORE Slack linker local/runtime files
 seemore-slack-linker/.env
 seemore-slack-linker/.venv/

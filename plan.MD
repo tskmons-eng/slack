@@ -56,3 +56,8 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 - 定期実行は1日5回、`MAIN_TRIGGER_HOURS=3,10,13,16,20` とする。
 - Web管理アクション `?action=set_schedule&hours=...&confirm=UPDATE_SCHEDULE` は `MAIN_TRIGGER_HOURS` だけを更新し、`scheduledMain()` のトリガーを作り直す。
+## 2026-06-12 Gmail Slack Link Fix
+
+- Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
+- Gmail UI URL は `message.getId()` ではなく `thread.getId()` を使い、`#all/{threadId}` 形式でスレッドを開く。
+- 直リンクが開けない場合の保険として、RFC 822 `Message-ID` の Gmail 検索リンクも同じ通知内に出す。

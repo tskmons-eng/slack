@@ -1,3 +1,9 @@
+## Gmail Slack Notification Links
+
+- Gmail から Slack へ通知するメールリンクは、短縮URLの見た目よりも、速く開けることと実メールを確実に開けることを優先する。
+- 外部短縮URLサービスの呼び出しは、通知遅延やクリック時の遅さにつながるため、基本は Slack 表示リンク + Gmail 直リンクにする。
+- Gmail の直接リンクはメッセージIDではなくスレッドIDを優先し、開けない場合に備えて Message-ID 検索リンクを併記する。
+
 # User Priorities
 
 ## SEEMORE Slack 車案件 自動紐付け
