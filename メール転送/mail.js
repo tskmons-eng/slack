@@ -71,10 +71,13 @@ function labelGmailToSlackTargets() {
 }
 
 function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) {
-  GmailApp.search(buildGmailToSlackQuery_(targetLabelName, doneLabelName), 0, 50)
-    .forEach(function(thread) {
-      thread.addLabel(targetLabel);
-    });
+  const query = buildGmailToSlackQuery_(targetLabelName, doneLabelName);
+  const threads = GmailApp.search(query, 0, 50);
+
+  Logger.log("転送ラベル付与対象: " + threads.length + "件");
+  threads.forEach(function(thread) {
+    thread.addLabel(targetLabel);
+  });
 }
 
 function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
@@ -84,7 +87,7 @@ function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
     `-label:${doneLabelName}`,
     "-from:me",
     "-subject:セキュリティ",
-    "-subject:Notion Team",
+    `-subject:"Notion Team"`,
     "-subject:security",
     "-subject:不審なアクティビティ",
     `-subject:"Google で iPhone のセットアップを完了しましょう"`,

@@ -7,6 +7,7 @@
 - 定期実行は `scheduledGmailToSlack()` 1本にし、`labelGmailToSlackTargets()` の直後に `forwardLabeledGmailToSlack()` を実行する。
 - Slack本文の見た目は既存形式を維持し、リンク行だけ `メールを開く` 表示のGmail直リンクにする。TinyURLと「開けない時」行は使わない。
 - 除外条件はユーザー様指定の `newer_than:14d`、`-from:me`、`-label:slack転送済み`、指定subject/fromのリストを使う。
+- Gmail検索では `-subject:Notion Team` のように空白を含む除外語を裸で書くと `Team` が必須検索語扱いになるため、`-subject:"Notion Team"` のように引用符で囲む。
 
 ## Current Task: SEEMORE Slack 車案件 自動紐付けツール
 
