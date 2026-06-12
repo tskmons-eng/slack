@@ -3,15 +3,11 @@ function forwardLabeledGmailToSlack() {
   const DONE_LABEL = "slack転送済み";
   const WEBHOOK_URL = getSlackWebhookUrl_();
 
-  const targetLabel = GmailApp.getUserLabelByName(TARGET_LABEL);
-  if (!targetLabel) return;
+  const targetLabel = getOrCreateGmailLabel_(TARGET_LABEL);
+  const doneLabel = getOrCreateGmailLabel_(DONE_LABEL);
+  labelGmailToSlackTargets_(targetLabel, TARGET_LABEL, DONE_LABEL);
 
-  let doneLabel = GmailApp.getUserLabelByName(DONE_LABEL);
-  if (!doneLabel) {
-    doneLabel = GmailApp.createLabel(DONE_LABEL);
-  }
-
-  const threads = targetLabel.getThreads();
+  const threads = getGmailToSlackTargetThreads_(TARGET_LABEL, DONE_LABEL);
 
   threads.forEach(thread => {
     const messages = thread.getMessages();
@@ -26,7 +22,8 @@ function forwardLabeledGmailToSlack() {
       .trim();
     const excerpt = body.slice(0, 300) + (body.length > 300 ? "…" : "");
 
-    const shortUrl = buildGmailThreadUrl_(thread);
+    const gmailUrl = buildGmailThreadUrl_(thread);
+    const shortUrl = slackLinkText_(gmailUrl, "メールを開く");
 
     const text = [
       "📩 *Gmail通知*",
@@ -56,6 +53,54 @@ function forwardLabeledGmailToSlack() {
   });
 }
 
+function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) {
+  GmailApp.search(buildGmailToSlackQuery_(targetLabelName, doneLabelName), 0, 50)
+    .forEach(function(thread) {
+      thread.addLabel(targetLabel);
+    });
+}
+
+function getGmailToSlackTargetThreads_(targetLabelName, doneLabelName) {
+  const query = buildGmailToSlackQuery_(targetLabelName, doneLabelName, {
+    requireTargetLabel: true
+  });
+  return GmailApp.search(query, 0, 50);
+}
+
+function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
+  const parts = [
+    "in:inbox",
+    "newer_than:14d",
+    `-label:${doneLabelName}`,
+    "-from:me",
+    "-subject:セキュリティ",
+    "-subject:Notion Team",
+    "-subject:security",
+    "-subject:不審なアクティビティ",
+    `-subject:"Google で iPhone のセットアップを完了しましょう"`,
+    "-subject:件の未読メッセージがあります",
+    `-subject:"Set preferences, add memory, and choose a look"`,
+    "-subject:Notionでチームに参加しましょう",
+    "-subject:平素はエックスサーバーをご利用いただき誠にありがとうございます。",
+    "-from:info@tamaseika.com",
+    "-from:no-reply@accounts.google.com",
+    "-from:security-noreply@accountprotection.microsoft.com",
+    "-from:mail@mail.adobe.com"
+  ];
+
+  if (options && options.requireTargetLabel) {
+    parts.unshift(`label:${targetLabelName}`);
+  } else {
+    parts.push(`-label:${targetLabelName}`);
+  }
+
+  return parts.join(" ");
+}
+
+function getOrCreateGmailLabel_(labelName) {
+  return GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
+}
+
 function installGmailToSlackTrigger() {
   assertExpectedGmailAccount_("seemore.co.ltd@gmail.com");
   removeGmailToSlackTrigger();
@@ -76,6 +121,10 @@ function removeGmailToSlackTrigger() {
 
 function buildGmailThreadUrl_(thread) {
   return `https://mail.google.com/mail/?authuser=${encodeURIComponent("seemore.co.ltd@gmail.com")}#inbox/${thread.getId()}`;
+}
+
+function slackLinkText_(url, label) {
+  return `<${url}|${label}>`;
 }
 
 function getSlackWebhookUrl_() {

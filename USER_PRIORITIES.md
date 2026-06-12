@@ -43,4 +43,5 @@
 
 - `tsk.mons@gmail.com` から `seemore.co.ltd@gmail.com` への既存Gmail転送は残す。
 - GmailからSlackへの通知は `seemore.co.ltd@gmail.com` のメールボックスを対象にし、個人Gmailで実行された場合は停止する。
+- GmailからSlackへの通知は、除外条件に当たらないメールへ `転送` ラベルを付け、その `転送` ラベル付きだけをSlackへ送り、成功後に `転送` を外して `slack転送済み` を付ける。この仕組みはリンク修正時も変えない。
 - Slack通知では、`tsk.mons@gmail.com` 宛の個人メールを通知対象から除外する。
