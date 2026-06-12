@@ -318,6 +318,17 @@ function runProduction() {
   return runWithMode_(false, null);
 }
 
+function runInvoiceDryRunNow() {
+  return processInvoiceReactions_(true, null, null);
+}
+
+function runInvoiceForwardNow(confirm) {
+  if (confirm !== INVOICE_FORWARD_CONFIRM_TOKEN) {
+    throw new Error('請求書転送の手動本番実行には confirm=' + INVOICE_FORWARD_CONFIRM_TOKEN + ' が必要です。');
+  }
+  return processInvoiceReactions_(false, null, null);
+}
+
 function getSetupStatus_() {
   var status = {
     checked_at: nowIso_(),
@@ -800,6 +811,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     posted_count: 0,
     planned_count: 0,
     duplicate_skipped_count: 0,
+    link_only_count: 0,
     no_pdf_skipped_count: 0,
     error_count: 0,
     history_next_cursor_found: false,
@@ -895,20 +907,18 @@ function processInvoiceMessageForForward_(message, sourceChannel, targetChannel,
 
   var pdfFile = findPdfFile_(message);
   if (!pdfFile) {
-    stats.no_pdf_skipped_count += 1;
-    return;
+    stats.link_only_count += 1;
   }
-
   stats.candidates_found += 1;
   var sourceMessageTs = message.ts;
-  var fileId = stringValue_(pdfFile.id || pdfFile.url_private || invoiceFileName_(pdfFile));
+  var fileId = invoiceForwardDedupKey_(message, pdfFile);
   if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
     stats.duplicate_skipped_count += 1;
     return;
   }
 
   var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
-  var text = invoiceForwardMessage_(invoiceFileName_(pdfFile), sourceUrl);
+  var text = invoiceForwardMessage_(pdfFile ? invoiceFileName_(pdfFile) : '', sourceUrl);
   if (dryRunOverride) {
     stats.planned_count += 1;
     return;
@@ -922,7 +932,7 @@ function processInvoiceMessageForForward_(message, sourceChannel, targetChannel,
     source_message_ts: sourceMessageTs,
     source_url: sourceUrl,
     file_id: fileId,
-    file_name: invoiceFileName_(pdfFile),
+    file_name: pdfFile ? invoiceFileName_(pdfFile) : '',
     reaction_name: normalizeReactionName_(settings.invoiceReactionName),
     target_channel_name: targetChannel.name,
     target_channel_id: targetChannel.id,
@@ -1178,6 +1188,15 @@ function testFormatSlackMessagePermalink_() {
   );
 }
 
+function testInvoiceForwardFallback_() {
+  var sourceUrl = 'https://slack.test/archives/C/p1000000000000000';
+  assertTest_(invoiceForwardMessage_('', sourceUrl) === sourceUrl, 'invoice without PDF must forward only the source link');
+  assertTest_(
+    invoiceForwardDedupKey_({ts: '100.1'}, null) === 'no-pdf:100.100000',
+    'invoice without PDF must dedupe by source message timestamp'
+  );
+}
+
 function testSlackAuth() {
   var response = slackApi('auth.test', {});
   Logger.log('testSlackAuth OK: team=' + response.team + ', user=' + response.user);
@@ -1201,6 +1220,7 @@ function testResolveVinGroups() {
   testExtractVins();
   testExtractLinkKeys();
   testFormatSlackMessagePermalink_();
+  testInvoiceForwardFallback_();
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
@@ -2304,7 +2324,17 @@ function invoiceFileName_(file) {
   return stringValue_(file.name || file.title || file.id || 'file.pdf');
 }
 
+function invoiceForwardDedupKey_(message, pdfFile) {
+  if (pdfFile) {
+    return stringValue_(pdfFile.id || pdfFile.url_private || invoiceFileName_(pdfFile));
+  }
+  return 'no-pdf:' + normalizeSlackTsForCompare_(message.ts);
+}
+
 function invoiceForwardMessage_(fileName, sourceUrl) {
+  if (!fileName) {
+    return sourceUrl;
+  }
   return '【' + fileName + ' ' + todayDateString_() + '】\n' + sourceUrl;
 }
 

@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-12 12:16 JST
+Last updated: 2026-06-12 13:28 JST
 
 ## Completed
 
@@ -72,12 +72,19 @@ Last updated: 2026-06-12 12:16 JST
 - `MAIN_TRIGGER_HOURS` was updated from `3,13,20` to `3,10,13,16,20`.
 - Browser execution of `?action=status` confirmed `main_trigger_hours=3,10,13,16,20`, `scheduled_handler=scheduledMain`, and `scheduled_trigger_count=5`.
 
+## 2026-06-12 Version 33 Invoice Link-only Fallback
+
+- Web and API executable deployments were updated to version 33 after allowing rocket-marked invoice candidates without a PDF file.
+- If a candidate has a PDF, invoice forwarding still posts `【file name yyyy-mm-dd】` plus the source Slack link.
+- If a candidate has no PDF, invoice forwarding posts only the source Slack link and stores a `no-pdf:<message_ts>` duplicate key in `invoice_reaction_posts`.
+- Browser execution of `?action=invoice_run&confirm=RUN_INVOICE_FORWARD` succeeded with `candidates_found=2`, `posted_count=1`, `duplicate_skipped_count=1`, `link_only_count=1`, and `error_count=0`.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 31
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 31
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 33
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 33
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -95,6 +102,7 @@ Last updated: 2026-06-12 12:16 JST
 - `MAIN_TRIGGER_HOURS=3,10,13,16,20`.
 - `SLACK_BOT_TOKEN` is saved.
 - Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=10`; current verified test forwarded one PDF from a thread reply and then skipped the duplicate on the next dry run.
+- Invoice forwarding also supports rocket-marked messages without PDF files; those post only the source Slack link.
 - Slack link previews are enabled for new automatic posts; already-posted Slack messages are not retroactively unfurled.
 
 ## Verified Slack App
