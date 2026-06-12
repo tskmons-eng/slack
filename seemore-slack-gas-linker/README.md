@@ -153,6 +153,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `INVOICE_REACTION_NAME` | `rocket` | 転送条件にするSlack絵文字名です。 |
 | `INVOICE_LOOKBACK_DAYS` | `7` | 請求書転送で直近何日分を見るかです。 |
 | `INVOICE_HISTORY_LIMIT` | `50` | 請求書転送で1回に確認する投稿数です。 |
+| `INVOICE_REPLY_THREAD_LIMIT` | `10` | 請求書転送で返信を確認するrootスレッド数の上限です。 |
 | `INVOICE_FORWARD_DRY_RUN` | `false` | `true` にすると請求書転送も投稿せず候補数だけ確認します。 |
 
 ## テスト関数

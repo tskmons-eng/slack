@@ -19,6 +19,7 @@ var DEFAULT_SETTINGS = {
   INVOICE_REACTION_NAME: 'rocket',
   INVOICE_LOOKBACK_DAYS: '7',
   INVOICE_HISTORY_LIMIT: '50',
+  INVOICE_REPLY_THREAD_LIMIT: '10',
   INVOICE_FORWARD_DRY_RUN: 'false'
 };
 
@@ -367,6 +368,7 @@ function getSetupStatus_() {
       status.settings.invoice_reaction_name = stringValue_(settingOrDefault_(settings, 'INVOICE_REACTION_NAME'));
       status.settings.invoice_lookback_days = stringValue_(settingOrDefault_(settings, 'INVOICE_LOOKBACK_DAYS'));
       status.settings.invoice_history_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_HISTORY_LIMIT'));
+      status.settings.invoice_reply_thread_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_REPLY_THREAD_LIMIT'));
     }
   }
 
@@ -487,6 +489,7 @@ function getSettings() {
     invoiceReactionName: normalizeReactionName_(settingOrDefault_(raw, 'INVOICE_REACTION_NAME')),
     invoiceLookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_LOOKBACK_DAYS'), 7),
     invoiceHistoryLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_LIMIT'), 50),
+    invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 10),
     invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN'))
   };
 }
@@ -738,14 +741,18 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     reaction_name: '',
     lookback_days: 0,
     history_limit: 0,
+    reply_thread_limit: 0,
     messages_checked: 0,
+    reply_threads_checked: 0,
+    reply_messages_checked: 0,
     candidates_found: 0,
     posted_count: 0,
     planned_count: 0,
     duplicate_skipped_count: 0,
     no_pdf_skipped_count: 0,
     error_count: 0,
-    history_next_cursor_found: false
+    history_next_cursor_found: false,
+    message_samples: []
   };
 
   try {
@@ -757,6 +764,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     stats.reaction_name = settings.invoiceReactionName;
     stats.lookback_days = lookbackDaysOverride || settings.invoiceLookbackDays;
     stats.history_limit = Math.min(historyLimitOverride || settings.invoiceHistoryLimit, 200);
+    stats.reply_thread_limit = settings.invoiceReplyThreadLimit;
 
     if (!settings.invoiceForwardEnabled) {
       return stats;
@@ -782,51 +790,17 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
 
     messages.forEach(function(message) {
       try {
-        if (!messageHasReaction_(message, settings.invoiceReactionName)) {
-          return;
-        }
-
-        var pdfFile = findPdfFile_(message);
-        if (!pdfFile) {
-          stats.no_pdf_skipped_count += 1;
-          return;
-        }
-
-        stats.candidates_found += 1;
-        var sourceMessageTs = message.ts;
-        var fileId = stringValue_(pdfFile.id || pdfFile.url_private || invoiceFileName_(pdfFile));
-        if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
-          stats.duplicate_skipped_count += 1;
-          return;
-        }
-
-        var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
-        var text = invoiceForwardMessage_(invoiceFileName_(pdfFile), sourceUrl);
-        if (dryRunOverride) {
-          stats.planned_count += 1;
-          return;
-        }
-
-        var postResponse = postChannelMessage(targetChannel.id, text);
-        saveInvoiceReactionPost_({
-          processed_at: nowIso_(),
-          source_channel_name: sourceChannel.name,
-          source_channel_id: sourceChannel.id,
-          source_message_ts: sourceMessageTs,
-          source_url: sourceUrl,
-          file_id: fileId,
-          file_name: invoiceFileName_(pdfFile),
-          reaction_name: normalizeReactionName_(settings.invoiceReactionName),
-          target_channel_name: targetChannel.name,
-          target_channel_id: targetChannel.id,
-          posted_ts: postResponse.ts || '',
-          posted_text: text,
-          dry_run: false
-        });
-        stats.posted_count += 1;
+        addInvoiceMessageSample_(stats, message, settings.invoiceReactionName, 'root', message.ts);
+        processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, dryRunOverride);
       } catch (error) {
         stats.error_count += 1;
         saveError('processInvoiceReactionMessage:' + (message.ts || ''), error);
+      }
+      try {
+        scanInvoiceThreadRepliesForForward_(message, sourceChannel, targetChannel, settings, stats, dryRunOverride);
+      } catch (error) {
+        stats.error_count += 1;
+        saveError('processInvoiceReactionReplies:' + (message.ts || ''), error);
       }
     });
   } catch (error) {
@@ -839,6 +813,73 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
   }
 
   return stats;
+}
+
+function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetChannel, settings, stats, dryRunOverride) {
+  if (!rootMessage.reply_count || stats.reply_threads_checked >= settings.invoiceReplyThreadLimit) {
+    return;
+  }
+
+  stats.reply_threads_checked += 1;
+  getThreadMessages(sourceChannel.id, rootMessage.ts).forEach(function(reply) {
+    if (normalizeSlackTsForCompare_(reply.ts) === normalizeSlackTsForCompare_(rootMessage.ts)) {
+      return;
+    }
+
+    stats.reply_messages_checked += 1;
+    try {
+      addInvoiceMessageSample_(stats, reply, settings.invoiceReactionName, 'reply', rootMessage.ts);
+      processInvoiceMessageForForward_(reply, sourceChannel, targetChannel, settings, stats, dryRunOverride);
+    } catch (error) {
+      stats.error_count += 1;
+      saveError('processInvoiceReactionReply:' + (reply.ts || ''), error);
+    }
+  });
+}
+
+function processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, dryRunOverride) {
+  if (!messageHasReaction_(message, settings.invoiceReactionName)) {
+    return;
+  }
+
+  var pdfFile = findPdfFile_(message);
+  if (!pdfFile) {
+    stats.no_pdf_skipped_count += 1;
+    return;
+  }
+
+  stats.candidates_found += 1;
+  var sourceMessageTs = message.ts;
+  var fileId = stringValue_(pdfFile.id || pdfFile.url_private || invoiceFileName_(pdfFile));
+  if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
+    stats.duplicate_skipped_count += 1;
+    return;
+  }
+
+  var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
+  var text = invoiceForwardMessage_(invoiceFileName_(pdfFile), sourceUrl);
+  if (dryRunOverride) {
+    stats.planned_count += 1;
+    return;
+  }
+
+  var postResponse = postChannelMessage(targetChannel.id, text);
+  saveInvoiceReactionPost_({
+    processed_at: nowIso_(),
+    source_channel_name: sourceChannel.name,
+    source_channel_id: sourceChannel.id,
+    source_message_ts: sourceMessageTs,
+    source_url: sourceUrl,
+    file_id: fileId,
+    file_name: invoiceFileName_(pdfFile),
+    reaction_name: normalizeReactionName_(settings.invoiceReactionName),
+    target_channel_name: targetChannel.name,
+    target_channel_id: targetChannel.id,
+    posted_ts: postResponse.ts || '',
+    posted_text: text,
+    dry_run: false
+  });
+  stats.posted_count += 1;
 }
 
 function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl, targetUrl) {
@@ -1914,6 +1955,7 @@ function settingMemo_(key) {
     INVOICE_REACTION_NAME: '転送条件にするSlack絵文字名です。:rocket: の場合は rocket と指定します。',
     INVOICE_LOOKBACK_DAYS: '請求書転送で直近何日分の投稿を見るかを指定します。',
     INVOICE_HISTORY_LIMIT: '請求書転送で1回に確認する投稿数です。制限対策のため必要以上に増やさないでください。',
+    INVOICE_REPLY_THREAD_LIMIT: '請求書転送で返信を確認するrootスレッド数の上限です。',
     INVOICE_FORWARD_DRY_RUN: 'trueなら請求書転送もSlackへ投稿せず候補数だけ確認します。'
   };
   return memos[key] || '';
@@ -2153,6 +2195,30 @@ function messageHasReaction_(message, reactionName) {
   return (message.reactions || []).some(function(reaction) {
     return normalizeReactionName_(reaction.name) === expected;
   });
+}
+
+function addInvoiceMessageSample_(stats, message, reactionName, scope, threadTs) {
+  if (!stats.message_samples || stats.message_samples.length >= 10) {
+    return;
+  }
+  stats.message_samples.push(invoiceMessageSample_(message, reactionName, scope, threadTs));
+}
+
+function invoiceMessageSample_(message, reactionName, scope, threadTs) {
+  var files = message.files || [];
+  return {
+    scope: scope || 'root',
+    ts: message.ts || '',
+    thread_ts: message.thread_ts || threadTs || '',
+    text_preview: stringValue_(message.text).slice(0, 120),
+    reaction_names: (message.reactions || []).map(function(reaction) {
+      return normalizeReactionName_(reaction.name);
+    }),
+    target_reaction_found: messageHasReaction_(message, reactionName),
+    file_count: files.length,
+    file_names: files.map(invoiceFileName_),
+    pdf_file_names: files.filter(isPdfFile_).map(invoiceFileName_)
+  };
 }
 
 function normalizeReactionName_(value) {

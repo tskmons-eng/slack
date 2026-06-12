@@ -38,3 +38,10 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - Bot token is saved in the GAS `settings` sheet.
 - Target Slack channels are private. The bot was invited to `依頼_車案件`, `carmore依頼`, and `オールマシンサービス`.
 - Slack `search.messages` returned `not_allowed_token_type` for Bot tokens, so the GAS implementation relies on `conversations.history` over joined channels instead of Slack search.
+
+## 2026-06-12 Invoice Follow-up
+
+- 請求書転送は root 投稿だけでなく、`reply_count` がある root から最大 `INVOICE_REPLY_THREAD_LIMIT=10` スレまで返信も確認する。
+- 転送対象は同じメッセージに `rocket` リアクションと PDF ファイルがあるものに限定し、同一スレ内の無関係な PDF までは広げない。
+- dry run では root/reply 区分、リアクション名、ファイル名、PDF 名を `message_samples` に出し、Slack 側の付与位置を確認できるようにする。
+- version 28 でテスト PDF `保冷バック.pdf` の返信転送を本番実行済み。直後の dry run は `duplicate_skipped_count=1` で重複回避を確認済み。
