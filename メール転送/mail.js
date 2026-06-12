@@ -1,40 +1,17 @@
 function forwardLabeledGmailToSlack() {
-  const EXPECTED_GMAIL_ACCOUNT = "seemore.co.ltd@gmail.com";
+  const TARGET_LABEL = "転送";
   const DONE_LABEL = "slack転送済み";
   const WEBHOOK_URL = getSlackWebhookUrl_();
-  assertExpectedGmailAccount_(EXPECTED_GMAIL_ACCOUNT);
 
-  // 2週間以内・受信トレイ・転送済み除外・自分の送信除外・個人宛メール除外・セキュリティ通知除外
-  const query = [
-    "in:inbox",
-    "newer_than:14d",
-    `-label:${DONE_LABEL}`,
-    "-from:me",
-    "-to:tsk.mons@gmail.com",
-    "-cc:tsk.mons@gmail.com",
-    "-bcc:tsk.mons@gmail.com",
-    "-deliveredto:tsk.mons@gmail.com",
-    "-subject:セキュリティ",
-    "-subject:Notion Team",
-    "-subject:security",
-    "-subject:不審なアクティビティ",
-    `-subject:"Google で iPhone のセットアップを完了しましょう"`,
-    "-subject:件の未読メッセージがあります",
-    `-subject:"Set preferences, add memory, and choose a look"`,
-    "-subject:Notionでチームに参加しましょう",
-    "-subject:平素はエックスサーバーをご利用いただき誠にありがとうございます。",
-    "-from:info@tamaseika.com",
-    "-from:no-reply@accounts.google.com",
-    "-from:security-noreply@accountprotection.microsoft.com",
-    "-from:mail@mail.adobe.com"
-  ].join(" ");
+  const targetLabel = GmailApp.getUserLabelByName(TARGET_LABEL);
+  if (!targetLabel) return;
 
   let doneLabel = GmailApp.getUserLabelByName(DONE_LABEL);
   if (!doneLabel) {
     doneLabel = GmailApp.createLabel(DONE_LABEL);
   }
 
-  const threads = GmailApp.search(query, 0, 50);
+  const threads = targetLabel.getThreads();
 
   threads.forEach(thread => {
     const messages = thread.getMessages();
@@ -74,6 +51,7 @@ function forwardLabeledGmailToSlack() {
     });
 
     if (res.getResponseCode() === 200) {
+      thread.removeLabel(targetLabel);
       thread.addLabel(doneLabel);
     } else {
       Logger.log(`Slack送信失敗: ${res.getResponseCode()} ${res.getContentText()}`);
