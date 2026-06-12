@@ -7,19 +7,21 @@
 function forwardLabeledGmailToSlack() {
   const TARGET_LABEL = "転送";
   const DONE_LABEL = "slack転送済み";
-  const GMAIL_AUTHUSER = "seemore.co.ltd@gmail.com";
   const WEBHOOK_URL = getSlackWebhookUrl_();
 
-  const targetLabel = getOrCreateGmailLabel_(TARGET_LABEL);
-  const doneLabel = getOrCreateGmailLabel_(DONE_LABEL);
-  labelGmailToSlackTargets_(targetLabel, TARGET_LABEL, DONE_LABEL);
+  const targetLabel = GmailApp.getUserLabelByName(TARGET_LABEL);
+  if (!targetLabel) return;
 
-  const threads = getGmailToSlackTargetThreads_(TARGET_LABEL, DONE_LABEL);
+  let doneLabel = GmailApp.getUserLabelByName(DONE_LABEL);
+  if (!doneLabel) {
+    doneLabel = GmailApp.createLabel(DONE_LABEL);
+  }
+
+  const threads = targetLabel.getThreads();
 
   threads.forEach(function(thread) {
     const messages = thread.getMessages();
-    const message = getLatestEligibleMessage_(messages, GMAIL_AUTHUSER);
-    if (!message) return;
+    const message = messages[messages.length - 1];
 
     const subject = message.getSubject() || "(件名なし)";
     const from = message.getFrom() || "";
@@ -28,18 +30,17 @@ function forwardLabeledGmailToSlack() {
     const body = (message.getPlainBody() || "")
       .replace(/\s+/g, " ")
       .trim();
-    const excerpt = body.slice(0, 300) + (body.length > 300 ? "..." : "");
+    const excerpt = body.slice(0, 300) + (body.length > 300 ? "…" : "");
 
-    const gmailUrl = buildGmailThreadUrl_(thread, GMAIL_AUTHUSER);
-    const shortUrl = slackLinkText_(gmailUrl, "メールを開く");
+    const shortUrl = buildGmailThreadUrl_(thread);
 
     const text = [
-      "*Gmail通知*",
+      "📩 *Gmail通知*",
       `*件名:* ${subject}`,
       `*送信元:* ${from}`,
       `*日時:* ${date}`,
       `*リンク:* ${shortUrl}`,
-      "-------------",
+      "─────────────",
       excerpt
     ].join("\n");
 
@@ -57,53 +58,6 @@ function forwardLabeledGmailToSlack() {
       Logger.log("Slack送信失敗: " + res.getResponseCode() + " " + res.getContentText());
     }
   });
-}
-
-function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) {
-  const query = [
-    "in:inbox",
-    "newer_than:14d",
-    `-label:${targetLabelName}`,
-    `-label:${doneLabelName}`,
-    "-from:me",
-    "-to:tsk.mons@gmail.com",
-    "-cc:tsk.mons@gmail.com",
-    "-bcc:tsk.mons@gmail.com",
-    "-deliveredto:tsk.mons@gmail.com",
-    "-subject:セキュリティ",
-    "-subject:Notion Team",
-    "-subject:security",
-    "-subject:不審なアクティビティ",
-    `-subject:"Google で iPhone のセットアップを完了しましょう"`,
-    "-subject:件の未読メッセージがあります",
-    `-subject:"Set preferences, add memory, and choose a look"`,
-    "-subject:Notionでチームに参加しましょう",
-    "-subject:平素はエックスサーバーをご利用いただき誠にありがとうございます。",
-    "-from:info@tamaseika.com",
-    "-from:no-reply@accounts.google.com",
-    "-from:security-noreply@accountprotection.microsoft.com",
-    "-from:mail@mail.adobe.com"
-  ].join(" ");
-
-  GmailApp.search(query, 0, 50).forEach(function(thread) {
-    thread.addLabel(targetLabel);
-  });
-}
-
-function getOrCreateGmailLabel_(labelName) {
-  return GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
-}
-
-function getGmailToSlackTargetThreads_(targetLabelName, doneLabelName) {
-  const query = [
-    `label:${targetLabelName}`,
-    "in:inbox",
-    "newer_than:14d",
-    `-label:${doneLabelName}`,
-    "-from:me"
-  ].join(" ");
-
-  return GmailApp.search(query, 0, 50);
 }
 
 function installGmailToSlackTrigger() {
@@ -124,30 +78,8 @@ function removeGmailToSlackTrigger() {
   });
 }
 
-function buildGmailThreadUrl_(thread, authuser) {
-  return "https://mail.google.com/mail/?authuser=" + encodeURIComponent(authuser) + "#all/" + thread.getId();
-}
-
-function slackLinkText_(url, label) {
-  return "<" + url + "|" + String(label || "リンク").replace(/[<>|]/g, " ").trim() + ">";
-}
-
-function getLatestEligibleMessage_(messages, accountEmail) {
-  const cutoff = Date.now() - 14 * 24 * 60 * 60 * 1000;
-  const account = String(accountEmail || "").toLowerCase();
-
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
-    if (message.getDate().getTime() < cutoff) continue;
-    if (messageFromMatches_(message, account)) continue;
-    return message;
-  }
-
-  return null;
-}
-
-function messageFromMatches_(message, accountEmail) {
-  return String(message.getFrom() || "").toLowerCase().indexOf(accountEmail) !== -1;
+function buildGmailThreadUrl_(thread) {
+  return "https://mail.google.com/mail/?authuser=" + encodeURIComponent("seemore.co.ltd@gmail.com") + "#inbox/" + thread.getId();
 }
 
 function getSlackWebhookUrl_() {
