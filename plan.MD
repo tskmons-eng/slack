@@ -1,5 +1,11 @@
 # Plan
 
+## 2026-06-12 GitHub Publishing Helper
+
+- `tskmons-eng/slack` をGitHubに作成し、ローカル `main` を `origin/main` へpushする。
+- 他のフォルダでも同じ作業を繰り返せるよう、`scripts/publish-to-github.ps1` でremote設定とpushを標準化する。
+- GitHub CLIにログイン済みなら `-Create` でrepo作成から実行し、未ログインの場合はGitHub画面でrepoを作ってから同じスクリプトでpushする。
+
 ## 2026-06-12 Gmail Slack Forwarding Reset
 
 - `seemore.co.ltd@gmail.com` の受信箱で、除外条件に当たらないメールへ `転送` ラベルを付ける。

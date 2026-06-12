@@ -45,3 +45,7 @@
 - GmailからSlackへの通知は `seemore.co.ltd@gmail.com` のメールボックスを対象にし、個人Gmailで実行された場合は停止する。
 - GmailからSlackへの通知は、除外条件に当たらないメールへ `転送` ラベルを付け、その `転送` ラベル付きだけをSlackへ送り、成功後に `転送` を外して `slack転送済み` を付ける。この仕組みはリンク修正時も変えない。
 - 自動のラベル付けでは `in:inbox` と `-from:me` を使い、送信メールには通常 `転送` ラベルを付けない。既に `転送` ラベルが付いているメールはラベルキューとして扱い、転送対象にする。
+
+## GitHub Publishing
+
+- GitHubへの初回公開は、毎回手作業でremoteを組み立てず、`scripts/publish-to-github.ps1` を使ってrepo作成またはremote設定とpushを標準化する。
