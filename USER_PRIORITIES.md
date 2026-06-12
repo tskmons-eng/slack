@@ -24,3 +24,7 @@
 - `tsk.mons@gmail.com` 側の一部メールを `seemore.co.ltd@gmail.com` へ転送する。
 - `2026-06-02 17:27:19 +09:00` 以降に届く `Yahoo!オークション - 取引メッセージ：` のメールだけを転送する。
 - 転送が成功したメールには `forwarded_to_seemore` ラベルを付け、再転送を防ぐ。
+
+## Slack Link Presentation
+
+- 自動投稿するSlack元投稿リンクは、手動でSlackアプリから共有した時と同じようにサムネイル/リンクプレビューが出る状態を優先する。URL文字列だけの表示は避ける。

@@ -45,3 +45,8 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - 転送対象は同じメッセージに `rocket` リアクションと PDF ファイルがあるものに限定し、同一スレ内の無関係な PDF までは広げない。
 - dry run では root/reply 区分、リアクション名、ファイル名、PDF 名を `message_samples` に出し、Slack 側の付与位置を確認できるようにする。
 - version 28 でテスト PDF `保冷バック.pdf` の返信転送を本番実行済み。直後の dry run は `duplicate_skipped_count=1` で重複回避を確認済み。
+
+## 2026-06-12 Slack Link Preview Follow-up
+
+- 車案件の紐付け返信と請求書転送の元投稿リンクは、URL文字列だけでなくSlack上のサムネイル/リンクプレビュー表示を優先する。
+- Slack API投稿時は `unfurl_links=true` / `unfurl_media=true` にし、`chat.getPermalink` の `cid=` 型URLは手動コピーに近い `channel=` / `message_ts=` 付きURLへ整形する。

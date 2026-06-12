@@ -706,7 +706,32 @@ function getPermalink(channelId, messageTs) {
   if (!response.permalink) {
     throw new Error('chat.getPermalinkでURLを取得できませんでした。');
   }
-  return response.permalink;
+  return formatSlackMessagePermalink_(response.permalink, channelId, messageTs);
+}
+
+function formatSlackMessagePermalink_(permalink, channelId, messageTs) {
+  var value = stringValue_(permalink);
+  var hashIndex = value.indexOf('#');
+  var hash = hashIndex === -1 ? '' : value.slice(hashIndex);
+  var withoutHash = hashIndex === -1 ? value : value.slice(0, hashIndex);
+  var queryIndex = withoutHash.indexOf('?');
+  var baseUrl = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+  var rawQuery = queryIndex === -1 ? '' : withoutHash.slice(queryIndex + 1);
+  var params = [];
+
+  if (rawQuery) {
+    rawQuery.split('&').forEach(function(part) {
+      var key = (part.split('=')[0] || '').replace(/^amp;/, '');
+      if (!part || key === 'cid' || key === 'channel' || key === 'message_ts') {
+        return;
+      }
+      params.push(part);
+    });
+  }
+
+  params.push('channel=' + encodeURIComponent(channelId));
+  params.push('message_ts=' + encodeURIComponent(messageTs));
+  return baseUrl + '?' + params.join('&') + hash;
 }
 
 function postThreadMessage(channelId, threadTs, text) {
@@ -714,8 +739,8 @@ function postThreadMessage(channelId, threadTs, text) {
     channel: channelId,
     thread_ts: threadTs,
     text: text,
-    unfurl_links: false,
-    unfurl_media: false
+    unfurl_links: true,
+    unfurl_media: true
   });
 }
 
@@ -723,8 +748,8 @@ function postChannelMessage(channelId, text) {
   return slackApi('chat.postMessage', {
     channel: channelId,
     text: text,
-    unfurl_links: false,
-    unfurl_media: false
+    unfurl_links: true,
+    unfurl_media: true
   });
 }
 
@@ -1115,6 +1140,18 @@ function testExtractLinkKeys() {
   Logger.log('testExtractLinkKeys OK: ' + JSON.stringify(keys));
 }
 
+function testFormatSlackMessagePermalink_() {
+  var formatted = formatSlackMessagePermalink_(
+    'https://seemore-talk.slack.com/archives/C0APZAXLYGK/p1781197225625679?thread_ts=1781196779.540399&cid=C0APZAXLYGK',
+    'C0APZAXLYGK',
+    '1781197225.625679'
+  );
+  assertTest_(
+    formatted === 'https://seemore-talk.slack.com/archives/C0APZAXLYGK/p1781197225625679?thread_ts=1781196779.540399&channel=C0APZAXLYGK&message_ts=1781197225.625679',
+    'Slack permalink must use channel/message_ts query parameters'
+  );
+}
+
 function testSlackAuth() {
   var response = slackApi('auth.test', {});
   Logger.log('testSlackAuth OK: team=' + response.team + ', user=' + response.user);
@@ -1137,6 +1174,7 @@ function testFindChannels() {
 function testResolveVinGroups() {
   testExtractVins();
   testExtractLinkKeys();
+  testFormatSlackMessagePermalink_();
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
