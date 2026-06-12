@@ -3,9 +3,13 @@ function forwardLabeledGmailToSlack() {
   const DONE_LABEL = "slack転送済み";
   const WEBHOOK_URL = getSlackWebhookUrl_();
 
-  const targetLabel = getOrCreateGmailLabel_(TARGET_LABEL);
-  const doneLabel = getOrCreateGmailLabel_(DONE_LABEL);
-  labelGmailToSlackTargets_(targetLabel, TARGET_LABEL, DONE_LABEL);
+  const targetLabel = GmailApp.getUserLabelByName(TARGET_LABEL);
+  if (!targetLabel) return;
+
+  let doneLabel = GmailApp.getUserLabelByName(DONE_LABEL);
+  if (!doneLabel) {
+    doneLabel = GmailApp.createLabel(DONE_LABEL);
+  }
 
   const threads = targetLabel.getThreads();
 
@@ -51,6 +55,14 @@ function forwardLabeledGmailToSlack() {
       Logger.log(`Slack送信失敗: ${res.getResponseCode()} ${res.getContentText()}`);
     }
   });
+}
+
+function labelGmailToSlackTargets() {
+  const TARGET_LABEL = "転送";
+  const DONE_LABEL = "slack転送済み";
+  const targetLabel = getOrCreateGmailLabel_(TARGET_LABEL);
+
+  labelGmailToSlackTargets_(targetLabel, TARGET_LABEL, DONE_LABEL);
 }
 
 function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) {
