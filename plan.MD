@@ -1,5 +1,13 @@
 # Plan
 
+## 2026-06-12 Gmail Slack Forwarding Reset
+
+- `seemore.co.ltd@gmail.com` の受信箱で、除外条件に当たらないメールへ `転送` ラベルを付ける。
+- Slack通知は `転送` ラベル付きだけを対象にし、送信成功後に `転送` を外して `slack転送済み` を付ける。
+- 定期実行は `scheduledGmailToSlack()` 1本にし、`labelGmailToSlackTargets()` の直後に `forwardLabeledGmailToSlack()` を実行する。
+- Slack本文の見た目は既存形式を維持し、リンク行だけ `メールを開く` 表示のGmail直リンクにする。TinyURLと「開けない時」行は使わない。
+- 除外条件はユーザー様指定の `newer_than:14d`、`-from:me`、`-label:slack転送済み`、指定subject/fromのリストを使う。
+
 ## Current Task: SEEMORE Slack 車案件 自動紐付けツール
 
 Slack 内の車案件スレッドを、車体番号またはスレIDの完全一致で自動紐付けする Google Apps Script 版を `seemore-slack-gas-linker/` に構築する。加えて、ロケットリアクション付き投稿を請求書チャンネルへ転送し、PDFがなければリンクのみで転送する。
@@ -59,5 +67,5 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
-- Gmail UI URL は `message.getId()` ではなく `thread.getId()` を使い、`#all/{threadId}` 形式でスレッドを開く。
-- 直リンクが開けない場合の保険として、RFC 822 `Message-ID` の Gmail 検索リンクも同じ通知内に出す。
+- Gmail UI URL は `message.getId()` ではなく `thread.getId()` を使い、`authuser=seemore.co.ltd@gmail.com` を指定してスレッドを開く。
+- Slack通知内のリンク行は1行だけにし、`メールを開く` の表示リンクにする。余計な検索リンクや「開けない時」行は出さない。

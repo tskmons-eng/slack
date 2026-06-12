@@ -61,6 +61,11 @@ function forwardLabeledGmailToSlack() {
   });
 }
 
+function scheduledGmailToSlack() {
+  labelGmailToSlackTargets();
+  forwardLabeledGmailToSlack();
+}
+
 function labelGmailToSlackTargets() {
   const TARGET_LABEL = "転送";
   const DONE_LABEL = "slack転送済み";
@@ -110,15 +115,21 @@ function installGmailToSlackTrigger() {
   assertExpectedGmailAccount_("seemore.co.ltd@gmail.com");
   removeGmailToSlackTrigger();
 
-  ScriptApp.newTrigger("forwardLabeledGmailToSlack")
+  ScriptApp.newTrigger("scheduledGmailToSlack")
     .timeBased()
     .everyMinutes(5)
     .create();
 }
 
 function removeGmailToSlackTrigger() {
+  const handlerFunctions = [
+    "scheduledGmailToSlack",
+    "forwardLabeledGmailToSlack",
+    "labelGmailToSlackTargets"
+  ];
+
   ScriptApp.getProjectTriggers().forEach(function(trigger) {
-    if (trigger.getHandlerFunction() === "forwardLabeledGmailToSlack") {
+    if (handlerFunctions.indexOf(trigger.getHandlerFunction()) !== -1) {
       ScriptApp.deleteTrigger(trigger);
     }
   });

@@ -14,12 +14,15 @@
   - Apps Scriptへ貼り付けやすい安全版。Webhook URLは含めない。
   - Apps Scriptは `seemore.co.ltd@gmail.com` で実行する。
   - `SLACK_WEBHOOK_URL` をScript Propertiesに保存してから使う。
-  - 個人Gmailで実行された場合は、誤通知防止のためエラーで停止する。
-  - `tsk.mons@gmail.com` 宛のメールは、seemore側へ転送されてきてもSlack通知しない。
+  - `scheduledGmailToSlack()` は、除外条件に当たらない受信メールへ `転送` ラベルを付け、その `転送` ラベル付きだけをSlackへ送る。
+  - Slack送信が200で成功したら `転送` を外し、`slack転送済み` を付ける。
+  - Slackのリンク行は外部短縮URLを使わず、`メールを開く` という短い表示でGmail直リンクを開く。
 
 ## セットアップ
 
 1. `seemore.co.ltd@gmail.com` のApps Scriptプロジェクトに `gmail_to_slack_notification.js` の内容を入れる。
 2. Script Propertiesに `SLACK_WEBHOOK_URL` を設定する。
-3. `installGmailToSlackTrigger()` を1回実行して5分おきのトリガーを作る。
-4. `tsk.mons@gmail.com` 側で動いている `forwardLabeledGmailToSlack` トリガーがあれば止める。
+3. `labelGmailToSlackTargets()` を手動実行し、対象メールだけに `転送` ラベルが付くことを確認する。
+4. `forwardLabeledGmailToSlack()` を手動実行し、Slack送信と `slack転送済み` ラベル付与を確認する。
+5. `scheduledGmailToSlack()` を手動実行し、ラベル付けから転送まで一連で動くことを確認する。
+6. `installGmailToSlackTrigger()` を1回実行して、`scheduledGmailToSlack` の5分おきトリガーを作る。
