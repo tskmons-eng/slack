@@ -7,7 +7,7 @@ function forwardLabeledGmailToSlack() {
   const doneLabel = getOrCreateGmailLabel_(DONE_LABEL);
   labelGmailToSlackTargets_(targetLabel, TARGET_LABEL, DONE_LABEL);
 
-  const threads = getGmailToSlackTargetThreads_(TARGET_LABEL, DONE_LABEL);
+  const threads = targetLabel.getThreads();
 
   threads.forEach(thread => {
     const messages = thread.getMessages();
@@ -60,13 +60,6 @@ function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) 
     });
 }
 
-function getGmailToSlackTargetThreads_(targetLabelName, doneLabelName) {
-  const query = buildGmailToSlackQuery_(targetLabelName, doneLabelName, {
-    requireTargetLabel: true
-  });
-  return GmailApp.search(query, 0, 50);
-}
-
 function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
   const parts = [
     "in:inbox",
@@ -88,11 +81,7 @@ function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
     "-from:mail@mail.adobe.com"
   ];
 
-  if (options && options.requireTargetLabel) {
-    parts.unshift(`label:${targetLabelName}`);
-  } else {
-    parts.push(`-label:${targetLabelName}`);
-  }
+  parts.push(`-label:${targetLabelName}`);
 
   return parts.join(" ");
 }
