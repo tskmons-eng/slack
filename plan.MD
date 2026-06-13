@@ -88,6 +88,16 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - 既存の5本トリガーが残っていても、次回 `scheduledMain()` 実行時に期待トリガー数と違えば `MAIN_TRIGGER_INTERVAL_HOURS=1` の毎時トリガーへ作り直す。
 - Slack Events API用に `doPost` の `reaction_added` 受け口を追加する。ただし利用にはWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_VERIFICATION_TOKEN` をsettingsシートへ入れる必要がある。
 - それでもBot未参加チャンネル、lookback外の古い投稿、ページ上限超過、返信rootが範囲外、Slack API/GAS実行時間エラーでは送信漏れまたは遅延があり得る。
+
+## 2026-06-14 Invoice Monitoring Assumptions and Limits
+
+- 実運用の請求書ロケット監視元は約6チャンネルで、現状は絞り込みにくい。
+- 新規投稿は少なく、古い投稿のスレッド返信にコメントして `rocket` を押す使い方が多い。
+- 1時間以内の転送は許容範囲だが、未転送も誤転送も避ける必要がある。
+- 請求書ロケットはSlack Events APIの `reaction_added` で即時転送し、1時間ポーリングを保険として残す構成が望ましい。
+- 車体番号/スレID紐付けは過去スレッドとの照合が必要なため、Slack Events APIだけに置き換えず定期クロールを継続する。
+- `INVOICE_MAX_RUNTIME_SECONDS=300` を追加し、GASの1実行6分上限に近づく前に途中停止する。残ったチャンネルは最終確認時刻順で次回優先する。
+- Slack APIがHTTP 429を返した場合は `Retry-After` を最大30秒まで待って1回再試行する。
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。

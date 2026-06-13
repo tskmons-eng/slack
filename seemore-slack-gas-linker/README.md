@@ -52,6 +52,16 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 
 スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。コード側の受け口は用意済みですが、使う場合はWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_VERIFICATION_TOKEN` をsettingsシートへ入れてからSlack側でEvent Subscriptionsを有効にしてください。通常のポーリング方式も併用されます。
 
+2026-06-14時点の運用想定:
+
+- 請求書ロケット監視元は約6チャンネルで、実運用上は絞り込みにくい。
+- 新規投稿は少なく、古い投稿のスレッド返信へ後からコメントして `rocket` を押すケースが多い。
+- 1時間以内の転送であれば許容できるが、未転送も誤転送も避けたい。
+- そのため、請求書ロケット転送はSlack Events APIによる即時転送を理想としつつ、後付けリアクションやイベント失敗への保険として1時間ごとのポーリングを残します。
+- 車体番号/スレIDの紐付けは、別チャンネルの過去スレッドとの照合が必要なため、Slack Events APIだけでは代替せず、定期クロールを継続します。
+
+Slack Events APIは通常のSlack AppのEvent Subscriptionsで受けます。別の有料ワークフロー機能ではありません。ただし、GAS WebアプリをSlackから到達できるURLとして公開する必要があり、本人限定デプロイのままではSlackからイベントを送れません。
+
 ## 必要なSlack Bot Scopes
 
 Slack AppのBot Token Scopesに以下を追加してください。
@@ -168,6 +178,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `INVOICE_HISTORY_PAGE_LIMIT` | `3` | 1チャンネルあたり何ページまで履歴を追うかです。`100 x 3` で最大300投稿を確認します。 |
 | `INVOICE_REPLY_THREAD_LIMIT` | `25` | 請求書転送で返信を確認するrootスレッド数の上限です。旧デフォルト `10` は自動で `25` に上げます。 |
 | `INVOICE_FORCE_RESCAN_HOURS` | `3` | 新着がないチャンネルでも、後付けリアクション検知のために再スキャンする間隔です。旧デフォルト `6` は自動で `3` に下げます。 |
+| `INVOICE_MAX_RUNTIME_SECONDS` | `300` | 請求書ロケット監視がGASの1実行上限に近づく前に途中停止する秒数です。残ったチャンネルは次回実行で優先されます。 |
 | `INVOICE_FORWARD_DRY_RUN` | `false` | `true` にすると請求書転送も投稿せず候補数だけ確認します。 |
 
 ## テスト関数
@@ -215,7 +226,19 @@ Apps Script上で以下を実行できます。
 - 返信側の `rocket` で、root投稿が履歴取得範囲や `INVOICE_REPLY_THREAD_LIMIT` の外にある場合。
 - Slack APIの一時エラー、レート制限、GAS実行時間上限で途中チャンネルが処理できなかった場合。
 
-対策として、現在は履歴ページング、30日lookback、3時間ごとの強制再スキャン、チャンネル別状態記録を入れています。完全に即時化し、古い返信への後付けスタンプまで確実に拾うにはSlack Events APIの `reaction_added` を有効化してください。
+対策として、現在は履歴ページング、30日lookback、3時間ごとの強制再スキャン、チャンネル別状態記録、GAS実行時間の手前での途中停止、Slack 429時の `Retry-After` 待機を入れています。途中停止した場合は、最終確認時刻が古いチャンネルから次回実行で優先します。完全に即時化し、古い返信への後付けスタンプまで拾いやすくするにはSlack Events APIの `reaction_added` を有効化してください。
+
+## GAS/Slack制限の見方
+
+2026-06-14に公式ドキュメントで確認した目安です。実際の上限はGoogle/Slack側で変更されることがあります。
+
+- Apps Scriptは1実行6分が上限です。`INVOICE_MAX_RUNTIME_SECONDS=300` で5分付近に抑え、途中チャンネルは次回へ回します。
+- Apps ScriptのURL FetchはGoogle個人アカウントで1日20,000回、Google Workspaceで1日100,000回が目安です。
+- Apps Scriptのトリガー実行時間合計はGoogle個人アカウントで1日90分、Google Workspaceで1日6時間が目安です。
+- Slack Web APIはメソッドごと、ワークスペースごとに分単位のレート制限があり、超過時はHTTP 429と `Retry-After` が返ります。
+- Slack Events APIはワークスペース/アプリあたり1時間30,000イベントが目安です。6チャンネル・新規投稿少なめの現在想定では問題になりにくいです。
+
+現在の約6チャンネル運用では、1時間ごとの軽い確認だけならURL Fetch量はかなり余裕があります。リスクはURL Fetch日次上限より、返信が多いチャンネルで1回6分に近づくことです。そのため、設定値を増やす場合は `errors` と `invoice_channel_scan_state` の `last_error`、`history_pages_scanned`、`messages_checked`、`reply_messages_checked` を見ながら調整します。
 
 重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
 
@@ -395,11 +418,11 @@ PDFファイルがない場合:
 
 ## トリガー確認
 
-Apps Script左メニューの `トリガー` で、`scheduledMain` が毎日03:00、10:00、13:00、16:00、20:00付近に設定されていることを確認します。
+Apps Script左メニューの `トリガー` で、`scheduledMain` が1時間ごとの時間主導型トリガーになっていることを確認します。
 
-作り直したい場合は `createDailyTrigger()` を実行します。既存の `main()` / `scheduledMain()` トリガーを消してから作り直します。
+作り直したい場合は `createDailyTrigger()` を実行します。`MAIN_TRIGGER_INTERVAL_HOURS=1` が入っていれば、既存の `main()` / `scheduledMain()` トリガーを消してから毎時トリガーを作り直します。
 
-Apps Scriptの時刻トリガーは分単位で厳密には動きません。`nearMinute(0)` を指定しているため、各時刻の0分付近で動く想定です。
+Apps Scriptの時間主導型トリガーは分単位で厳密には動きません。毎時のどこかで動く想定です。
 
 ## エラー確認
 

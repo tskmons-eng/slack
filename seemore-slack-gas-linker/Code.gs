@@ -26,6 +26,7 @@ var DEFAULT_SETTINGS = {
   INVOICE_HISTORY_PAGE_LIMIT: '3',
   INVOICE_REPLY_THREAD_LIMIT: '25',
   INVOICE_FORCE_RESCAN_HOURS: '3',
+  INVOICE_MAX_RUNTIME_SECONDS: '300',
   INVOICE_FORWARD_DRY_RUN: 'false'
 };
 
@@ -530,7 +531,8 @@ function getSetupStatus_() {
       invoice_history_limit: '',
       invoice_history_page_limit: '',
       invoice_reply_thread_limit: '',
-      invoice_force_rescan_hours: ''
+      invoice_force_rescan_hours: '',
+      invoice_max_runtime_seconds: ''
     },
     scheduled_handler: SCHEDULED_HANDLER_FUNCTION,
     scheduled_trigger_mode: '',
@@ -575,6 +577,7 @@ function getSetupStatus_() {
       status.settings.invoice_history_page_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_HISTORY_PAGE_LIMIT'));
       status.settings.invoice_reply_thread_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_REPLY_THREAD_LIMIT'));
       status.settings.invoice_force_rescan_hours = stringValue_(settingOrDefault_(settings, 'INVOICE_FORCE_RESCAN_HOURS'));
+      status.settings.invoice_max_runtime_seconds = stringValue_(settingOrDefault_(settings, 'INVOICE_MAX_RUNTIME_SECONDS'));
     }
   }
 
@@ -741,6 +744,7 @@ function getSettings() {
     invoiceHistoryPageLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_PAGE_LIMIT'), 3),
     invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 25),
     invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 3),
+    invoiceMaxRuntimeSeconds: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_MAX_RUNTIME_SECONDS'), 300),
     invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN'))
   };
 }
@@ -1028,6 +1032,7 @@ function updateChannelMessage(channelId, messageTs, text, attachments) {
 
 function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyLimitOverride) {
   var startedAt = nowIso_();
+  var startedAtMs = Date.now();
   var stats = {
     started_at: startedAt,
     dry_run: Boolean(dryRunOverride),
@@ -1045,6 +1050,9 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     history_page_limit: 0,
     reply_thread_limit: 0,
     force_rescan_hours: 0,
+    max_runtime_seconds: 0,
+    max_runtime_reached: false,
+    channels_deferred: 0,
     channels_checked: 0,
     channels_scanned: 0,
     channels_skipped_unchanged: 0,
@@ -1075,6 +1083,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     stats.history_page_limit = settings.invoiceHistoryPageLimit;
     stats.reply_thread_limit = settings.invoiceReplyThreadLimit;
     stats.force_rescan_hours = settings.invoiceForceRescanHours;
+    stats.max_runtime_seconds = settings.invoiceMaxRuntimeSeconds;
 
     if (!settings.invoiceForwardEnabled) {
       return stats;
@@ -1097,7 +1106,14 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     stats.source_channel_id = stats.source_channel_ids;
 
     var stateByChannelId = readInvoiceChannelScanState_();
-    sourceChannels.forEach(function(sourceChannel) {
+    sourceChannels = sortInvoiceSourceChannelsForRun_(sourceChannels, stateByChannelId);
+    for (var sourceIndex = 0; sourceIndex < sourceChannels.length; sourceIndex += 1) {
+      if (shouldStopInvoiceRun_(startedAtMs, settings.invoiceMaxRuntimeSeconds)) {
+        stats.max_runtime_reached = true;
+        stats.channels_deferred = sourceChannels.length - sourceIndex;
+        break;
+      }
+      var sourceChannel = sourceChannels[sourceIndex];
       var channelStats = makeInvoiceChannelStats_(sourceChannel, stats);
       stats.channel_results.push(channelStats);
       try {
@@ -1122,7 +1138,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
           saveInvoiceChannelScanState_(channelStats);
         }
       }
-    });
+    }
   } catch (error) {
     stats.error_count += 1;
     saveError('processInvoiceReactions', error);
@@ -1272,6 +1288,24 @@ function shouldForceInvoiceChannelRescan_(previousState, forceRescanHours) {
     return true;
   }
   return Date.now() - parsed >= forceRescanHours * 60 * 60 * 1000;
+}
+
+function sortInvoiceSourceChannelsForRun_(channels, stateByChannelId) {
+  return channels.slice().sort(function(a, b) {
+    var stateA = stateByChannelId[a.id] || {};
+    var stateB = stateByChannelId[b.id] || {};
+    var checkedA = Date.parse(stateA.last_checked_at || '') || 0;
+    var checkedB = Date.parse(stateB.last_checked_at || '') || 0;
+    if (checkedA !== checkedB) {
+      return checkedA - checkedB;
+    }
+    return a.name.localeCompare(b.name, 'ja');
+  });
+}
+
+function shouldStopInvoiceRun_(startedAtMs, maxRuntimeSeconds) {
+  var limitMs = Math.max(parsePositiveInteger_(maxRuntimeSeconds, 300) - 20, 30) * 1000;
+  return Date.now() - startedAtMs >= limitMs;
 }
 
 function collectInvoiceHistoryMessages_(channelId, oldestTs, historyLimit, historyPageLimit, inclusive) {
@@ -2725,14 +2759,12 @@ function normalizeSettingValue_(key, value) {
 }
 
 function slackApiWithToken_(token, method, payload) {
-  var response = UrlFetchApp.fetch('https://slack.com/api/' + method, {
-    method: 'post',
-    headers: {
-      Authorization: 'Bearer ' + token
-    },
-    payload: encodeSlackPayload_(payload || {}),
-    muteHttpExceptions: true
-  });
+  var response = fetchSlackApi_(token, method, payload || {});
+  if (response.getResponseCode && response.getResponseCode() === 429) {
+    var retryAfter = parsePositiveInteger_(getHeaderCaseInsensitive_(response.getHeaders(), 'Retry-After'), 1);
+    Utilities.sleep(Math.min(retryAfter, 30) * 1000);
+    response = fetchSlackApi_(token, method, payload || {});
+  }
 
   var body = response.getContentText();
   var parsed;
@@ -2750,6 +2782,28 @@ function slackApiWithToken_(token, method, payload) {
     throw apiError;
   }
   return parsed;
+}
+
+function fetchSlackApi_(token, method, payload) {
+  return UrlFetchApp.fetch('https://slack.com/api/' + method, {
+    method: 'post',
+    headers: {
+      Authorization: 'Bearer ' + token
+    },
+    payload: encodeSlackPayload_(payload || {}),
+    muteHttpExceptions: true
+  });
+}
+
+function getHeaderCaseInsensitive_(headers, name) {
+  var target = stringValue_(name).toLowerCase();
+  var keys = Object.keys(headers || {});
+  for (var i = 0; i < keys.length; i += 1) {
+    if (keys[i].toLowerCase() === target) {
+      return headers[keys[i]];
+    }
+  }
+  return '';
 }
 
 function encodeSlackPayload_(payload) {
