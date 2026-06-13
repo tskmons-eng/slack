@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-12 13:55 JST
+Last updated: 2026-06-14 00:35 JST
 
 ## Completed
 
@@ -86,15 +86,27 @@ Last updated: 2026-06-12 13:55 JST
 - Existing invoice forwarding posts were refreshed through `?action=refresh_invoice_previews&confirm=RUN_INVOICE_FORWARD`: `checked_rows=2`, `updated_count=2`, `skipped_count=0`, and `error_count=0`.
 - Browser execution of `?action=test_logic` returned `ok=true` on the version 34 deployment.
 
+## 2026-06-14 Version 35 Invoice Monitoring Expansion
+
+- `clasp push` succeeded for `Code.gs` and `appsscript.json`.
+- Web and API executable deployments were updated to version 35 after adding all-joined-channel invoice rocket monitoring, hourly trigger support, and per-channel scan state recording.
+- New settings are seeded on the next `setup()` or `scheduledMain()` run: `MAIN_TRIGGER_INTERVAL_HOURS=1`, `INVOICE_SOURCE_CHANNEL_NAMES=*`, and `INVOICE_FORCE_RESCAN_HOURS=6`.
+- New sheet `invoice_channel_scan_state` records source channel name/id, last check/full scan timestamps, latest Slack ts values, checked counts, candidate counts, posted/planned counts, duplicate skips, skip state, and last error.
+- New Web diagnostic action `?action=joined_channels` lists Bot-joined channels and the current invoice source candidates.
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
+- `clasp run` could not execute functions from this environment: dev mode returned a permission error, and `--nondev` returned `Script function not found`. Because the Web app is `MYSELF` access, live joined-channel listing and hourly trigger replacement must be confirmed through the logged-in Web app.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 34
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 34
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 35
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 35
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
+- Joined channels URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=joined_channels`
 
 ## Current Verified Setup
 
@@ -105,8 +117,8 @@ Last updated: 2026-06-12 13:55 JST
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.
 - `LOOKBACK_DAYS=60`.
-- `scheduledMain()` triggers exist: 5.
-- `MAIN_TRIGGER_HOURS=3,10,13,16,20`.
+- Last browser-verified `scheduledMain()` triggers: 5 from version 31. Version 35 changes the desired schedule to one hourly trigger, but the existing triggers must be replaced by opening `?action=setup` or running `createDailyTrigger()` as the deploying Google user.
+- Desired schedule after version 35 setup: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
 - `SLACK_BOT_TOKEN` is saved.
 - Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=10`; current verified test forwarded one PDF from a thread reply and then skipped the duplicate on the next dry run.
 - Invoice forwarding also supports rocket-marked messages without PDF files; those post the labeled source Slack link without forwarding a PDF file.

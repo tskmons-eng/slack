@@ -29,8 +29,9 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - 設定は `.env` ではなく `settings` シートで管理する。
 - 初期状態は必ず車案件側を `DRY_RUN=true` とし、誤投稿より未投稿を優先する。
 - スレIDは `スレID:` / `スレID：`、全角ID、小文字id、全角英数字、空白混在を正規化し、つながっていれば同じものとして扱う。
-- 毎日03:00、10:00、13:00、16:00、20:00付近に GAS トリガーで `scheduledMain()` を実行し、PCを閉じていても動く構成にする。
-- `依頼＿ALL` の投稿にロケットリアクションが付いたら、`依頼＿請求書` へ転送する。PDFがあれば `【ファイル名 今日の日付】` と元投稿リンク、PDFがなければ元投稿リンクのみを投稿する。
+- GAS トリガーで `scheduledMain()` を1時間ごとに実行し、PCを閉じていても動く構成にする。
+- Botが参加している全チャンネルを請求書ロケット監視候補にし、ロケットリアクション付き投稿を `依頼＿請求書` へ転送する。PDFがあれば `【ファイル名 今日の日付】` と元投稿リンク、PDFがなければ元投稿リンクのみを投稿する。
+- 請求書ロケット監視はチャンネル別に最終スキャン状態と件数を記録し、更新がないチャンネルはスキップする。後付けリアクション対策として、一定時間ごとに強制再スキャンする。
 
 ## Work Items
 
@@ -71,6 +72,14 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 - 定期実行は1日5回、`MAIN_TRIGGER_HOURS=3,10,13,16,20` とする。
 - Web管理アクション `?action=set_schedule&hours=...&confirm=UPDATE_SCHEDULE` は `MAIN_TRIGGER_HOURS` だけを更新し、`scheduledMain()` のトリガーを作り直す。
+
+## 2026-06-14 Invoice Monitoring Expansion
+
+- 請求書ロケット監視は `INVOICE_SOURCE_CHANNEL_NAMES=*` を初期値にし、Bot参加済み全チャンネルを対象にする。ただし転送先 `依頼＿請求書` 自身は除外する。
+- 定期実行は `MAIN_TRIGGER_INTERVAL_HOURS=1` の1時間ごとトリガーにする。`MAIN_TRIGGER_INTERVAL_HOURS` を空にした場合だけ、旧来の `MAIN_TRIGGER_HOURS` 日次時刻指定を使う。
+- `invoice_channel_scan_state` にチャンネルごとの最終確認時刻、最後にフルスキャンした時刻、最新投稿ts、確認件数、候補数、投稿数、重複スキップ数、エラーを保存する。
+- 通常は最新投稿tsが変わったチャンネルだけフルスキャンし、新着がないチャンネルはスキップする。後付けスタンプ対策として `INVOICE_FORCE_RESCAN_HOURS` を過ぎたチャンネルは新着がなくても再スキャンする。
+- スタンプが押された瞬間に転送するには、将来Slack Events APIの `reaction_added` をGAS `doPost` で受ける設計に進める。
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
