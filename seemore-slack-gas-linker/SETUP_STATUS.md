@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-14 00:35 JST
+Last updated: 2026-06-14 01:05 JST
 
 ## Completed
 
@@ -97,12 +97,29 @@ Last updated: 2026-06-14 00:35 JST
 - Local synthetic `testResolveVinGroups()` passed with Logger mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
 - `clasp run` could not execute functions from this environment: dev mode returned a permission error, and `--nondev` returned `Script function not found`. Because the Web app is `MYSELF` access, live joined-channel listing and hourly trigger replacement must be confirmed through the logged-in Web app.
 
+## 2026-06-14 Invoice Monitoring Hardening Follow-up
+
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
+- `clasp push` succeeded, and both the self setup web deployment and API executable deployment were updated to version 36.
+- Old invoice polling defaults are migrated on the next Apps Script run when they still match the previous defaults:
+  - `INVOICE_LOOKBACK_DAYS`: `7` -> `30`
+  - `INVOICE_HISTORY_LIMIT`: `50` -> `100`
+  - `INVOICE_REPLY_THREAD_LIMIT`: `10` -> `25`
+  - `INVOICE_FORCE_RESCAN_HOURS`: `6` -> `3`
+- Added `INVOICE_HISTORY_PAGE_LIMIT=3`; channel history now paginates up to 3 pages instead of only reading the first page.
+- For channels with new messages, invoice polling scans from the previous latest Slack timestamp forward. For first scans and forced rescans, it scans the configured lookback window.
+- Existing scheduled triggers self-heal during `scheduledMain()` if the count does not match the desired schedule, so the old 5-trigger setup is replaced by the hourly trigger after the next successful scheduled run.
+- Added optional Slack Events API handling in `doPost` for `reaction_added`; it uses `reactions.get` to fetch the exact reacted message and forwards it through the same duplicate-safe invoice path.
+- Slack Events API is not active unless the Web app is deployed with Slack-reachable access and `SLACK_EVENT_VERIFICATION_TOKEN` is configured in the settings sheet.
+- Remaining miss/delay risks: Bot not invited to a channel, reacted message older than lookback, more messages than `INVOICE_HISTORY_LIMIT x INVOICE_HISTORY_PAGE_LIMIT`, reply root outside the scanned range or reply thread cap, Slack API rate limits, and Apps Script execution time limits.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 35
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 35
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 36
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 36
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`

@@ -48,7 +48,9 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 
 チャンネルごとの最終確認状態は `invoice_channel_scan_state` シートに保存します。通常は直近の最新投稿が前回スキャン時から変わったチャンネルだけを深く確認し、新着がないチャンネルはスキップします。リアクションが古い投稿へ後付けされた場合に備え、`INVOICE_FORCE_RESCAN_HOURS` 時間を過ぎたチャンネルは新着がなくても再スキャンします。
 
-スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。現在の実装はポーリング方式の改善版です。
+新着が多いチャンネルで直近1ページから漏れないよう、`conversations.history` は `INVOICE_HISTORY_PAGE_LIMIT` ページまで追います。初回と強制再スキャンは `INVOICE_LOOKBACK_DAYS` の範囲、新着検知時は前回見た最新投稿以降を確認します。
+
+スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。コード側の受け口は用意済みですが、使う場合はWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_VERIFICATION_TOKEN` をsettingsシートへ入れてからSlack側でEvent Subscriptionsを有効にしてください。通常のポーリング方式も併用されます。
 
 ## 必要なSlack Bot Scopes
 
@@ -149,6 +151,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | --- | --- | --- |
 | `SLACK_BOT_TOKEN` | 空 | ユーザー様が `xoxb-...` を入力します。Script Propertiesにも同期されます。 |
 | `TEAM_DOMAIN` | 空 | 任意の控えです。処理には必須ではありません。 |
+| `SLACK_EVENT_VERIFICATION_TOKEN` | 空 | Slack Events APIを使う場合だけ、Slack AppのVerification Tokenを入力します。 |
 | `PARENT_CHANNEL_NAME` | `依頼_車案件` | 大親チャンネル名です。 |
 | `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |
@@ -160,10 +163,11 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `INVOICE_SOURCE_CHANNEL_NAMES` | `*` | ロケットリアクションを確認するチャンネル名です。`*` はBot参加済み全チャンネル、個別指定はカンマ区切りです。 |
 | `INVOICE_TARGET_CHANNEL_NAME` | `依頼＿請求書` | 請求書転送先チャンネル名です。 |
 | `INVOICE_REACTION_NAME` | `rocket` | 転送条件にするSlack絵文字名です。 |
-| `INVOICE_LOOKBACK_DAYS` | `7` | 請求書転送で直近何日分を見るかです。 |
-| `INVOICE_HISTORY_LIMIT` | `50` | 請求書転送で1回に確認する投稿数です。 |
-| `INVOICE_REPLY_THREAD_LIMIT` | `10` | 請求書転送で返信を確認するrootスレッド数の上限です。 |
-| `INVOICE_FORCE_RESCAN_HOURS` | `6` | 新着がないチャンネルでも、後付けリアクション検知のために再スキャンする間隔です。 |
+| `INVOICE_LOOKBACK_DAYS` | `30` | 請求書転送で直近何日分を見るかです。旧デフォルト `7` は自動で `30` に上げます。 |
+| `INVOICE_HISTORY_LIMIT` | `100` | 請求書転送で1ページに確認する投稿数です。旧デフォルト `50` は自動で `100` に上げます。 |
+| `INVOICE_HISTORY_PAGE_LIMIT` | `3` | 1チャンネルあたり何ページまで履歴を追うかです。`100 x 3` で最大300投稿を確認します。 |
+| `INVOICE_REPLY_THREAD_LIMIT` | `25` | 請求書転送で返信を確認するrootスレッド数の上限です。旧デフォルト `10` は自動で `25` に上げます。 |
+| `INVOICE_FORCE_RESCAN_HOURS` | `3` | 新着がないチャンネルでも、後付けリアクション検知のために再スキャンする間隔です。旧デフォルト `6` は自動で `3` に下げます。 |
 | `INVOICE_FORWARD_DRY_RUN` | `false` | `true` にすると請求書転送も投稿せず候補数だけ確認します。 |
 
 ## テスト関数
@@ -200,6 +204,18 @@ Apps Script上で以下を実行できます。
   - 請求書ロケット監視元の直近投稿から、ロケットリアクション付きの転送候補を確認します。PDFがない候補はリンクのみとして扱います。Slackへは投稿しません。
 - `?action=invoice_run&confirm=RUN_INVOICE_FORWARD`
   - 請求書転送を手動で本番実行します。
+
+## 請求書ロケット転送の漏れ対策
+
+以下はポーリング方式だけでは送信されない、または送信が遅れる可能性があります。
+
+- Botが参加していないチャンネルの投稿。
+- `INVOICE_LOOKBACK_DAYS` より古い投稿に後から `rocket` を付けた場合。
+- 1時間内に `INVOICE_HISTORY_LIMIT x INVOICE_HISTORY_PAGE_LIMIT` を超える投稿がある高頻度チャンネルで、上限より古い投稿に `rocket` が付いた場合。
+- 返信側の `rocket` で、root投稿が履歴取得範囲や `INVOICE_REPLY_THREAD_LIMIT` の外にある場合。
+- Slack APIの一時エラー、レート制限、GAS実行時間上限で途中チャンネルが処理できなかった場合。
+
+対策として、現在は履歴ページング、30日lookback、3時間ごとの強制再スキャン、チャンネル別状態記録を入れています。完全に即時化し、古い返信への後付けスタンプまで確実に拾うにはSlack Events APIの `reaction_added` を有効化してください。
 
 重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
 
@@ -243,6 +259,7 @@ target_thread_ts
 target_url
 posted_text
 dry_run
+history_pages_scanned
 ```
 
 `vin` 列は既存互換のため列名を残しています。保存値は `車体番号:ZVW30-1234567` または `スレID:案件ABC123` の形式です。

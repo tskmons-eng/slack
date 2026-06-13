@@ -9,6 +9,7 @@ var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
   TEAM_DOMAIN: '',
+  SLACK_EVENT_VERIFICATION_TOKEN: '',
   PARENT_CHANNEL_NAME: '依頼_車案件',
   CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
   LOOKBACK_DAYS: '60',
@@ -20,10 +21,11 @@ var DEFAULT_SETTINGS = {
   INVOICE_SOURCE_CHANNEL_NAMES: '*',
   INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
   INVOICE_REACTION_NAME: 'rocket',
-  INVOICE_LOOKBACK_DAYS: '7',
-  INVOICE_HISTORY_LIMIT: '50',
-  INVOICE_REPLY_THREAD_LIMIT: '10',
-  INVOICE_FORCE_RESCAN_HOURS: '6',
+  INVOICE_LOOKBACK_DAYS: '30',
+  INVOICE_HISTORY_LIMIT: '100',
+  INVOICE_HISTORY_PAGE_LIMIT: '3',
+  INVOICE_REPLY_THREAD_LIMIT: '25',
+  INVOICE_FORCE_RESCAN_HOURS: '3',
   INVOICE_FORWARD_DRY_RUN: 'false'
 };
 
@@ -98,7 +100,8 @@ var SHEET_HEADERS = {
     'duplicate_skipped_count',
     'skipped_unchanged',
     'last_error',
-    'dry_run'
+    'dry_run',
+    'history_pages_scanned'
   ]
 };
 
@@ -267,6 +270,10 @@ function runHtmlJsonAction_(callback) {
 function doPost(event) {
   var action = event && event.parameter ? event.parameter.action : '';
   if (action !== 'save_slack_token') {
+    var slackEventPayload = parseSlackEventPayload_(event);
+    if (slackEventPayload) {
+      return handleSlackEventPayload_(slackEventPayload);
+    }
     return HtmlService.createHtmlOutput('<p>Unsupported action.</p>');
   }
 
@@ -308,6 +315,137 @@ function doPost(event) {
   return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result));
 }
 
+function parseSlackEventPayload_(event) {
+  var contents = event && event.postData ? stringValue_(event.postData.contents) : '';
+  if (!contents || contents.charAt(0) !== '{') {
+    return null;
+  }
+  try {
+    return JSON.parse(contents);
+  } catch (error) {
+    saveError('parseSlackEventPayload', error);
+    return null;
+  }
+}
+
+function handleSlackEventPayload_(payload) {
+  try {
+    var settings = getSettings();
+    verifySlackEventToken_(payload, settings);
+    if (payload.type === 'url_verification') {
+      return ContentService.createTextOutput(stringValue_(payload.challenge));
+    }
+    if (payload.type !== 'event_callback') {
+      return jsonOutput_({ok: true, ignored: true, reason: 'unsupported_payload_type'});
+    }
+    return jsonOutput_(processSlackReactionEvent_(payload.event || {}, settings));
+  } catch (error) {
+    saveError('handleSlackEventPayload', error);
+    return jsonOutput_({ok: false, error: error.message});
+  }
+}
+
+function verifySlackEventToken_(payload, settings) {
+  var expected = stringValue_(settings.slackEventVerificationToken).trim();
+  if (!expected) {
+    throw new Error('SLACK_EVENT_VERIFICATION_TOKENが未設定です。Slack Events APIを使う場合はsettingsシートへVerification Tokenを入力してください。');
+  }
+  if (stringValue_(payload.token) !== expected) {
+    throw new Error('Slack Events verification tokenが一致しません。');
+  }
+}
+
+function processSlackReactionEvent_(event, settings) {
+  var stats = {
+    ok: true,
+    ignored: false,
+    reason: '',
+    event_type: event.type || '',
+    reaction_name: normalizeReactionName_(event.reaction),
+    candidates_found: 0,
+    posted_count: 0,
+    planned_count: 0,
+    duplicate_skipped_count: 0,
+    link_only_count: 0,
+    no_pdf_skipped_count: 0,
+    error_count: 0
+  };
+  if (event.type !== 'reaction_added') {
+    stats.ignored = true;
+    stats.reason = 'not_reaction_added';
+    return stats;
+  }
+  if (normalizeReactionName_(event.reaction) !== settings.invoiceReactionName) {
+    stats.ignored = true;
+    stats.reason = 'different_reaction';
+    return stats;
+  }
+  if (!settings.invoiceForwardEnabled) {
+    stats.ignored = true;
+    stats.reason = 'invoice_forward_disabled';
+    return stats;
+  }
+
+  var item = event.item || {};
+  if (item.type !== 'message' || !item.channel || !item.ts) {
+    stats.ignored = true;
+    stats.reason = 'unsupported_item';
+    return stats;
+  }
+
+  var targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
+  var sourceChannel = getChannelById_(item.channel) || {
+    id: item.channel,
+    name: item.channel,
+    is_private: false,
+    is_member: true
+  };
+  if (!isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannel)) {
+    stats.ignored = true;
+    stats.reason = 'source_channel_not_monitored';
+    return stats;
+  }
+
+  var message = getMessageFromReactionEvent_(item, settings.invoiceReactionName);
+  if (!message) {
+    throw new Error('reaction_added対象メッセージを取得できませんでした: ' + item.channel + ':' + item.ts);
+  }
+  processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, false);
+  return stats;
+}
+
+function isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannel) {
+  if (targetChannel && sourceChannel.id === targetChannel.id) {
+    return false;
+  }
+  if (settings.invoiceSourceAllJoinedChannels) {
+    return true;
+  }
+  return resolveInvoiceSourceChannels_(settings, targetChannel).some(function(channel) {
+    return channel.id === sourceChannel.id;
+  });
+}
+
+function getMessageFromReactionEvent_(item, reactionName) {
+  var response = slackApi('reactions.get', {
+    channel: item.channel,
+    timestamp: item.ts,
+    full: true
+  });
+  var message = response.message || null;
+  if (!message) {
+    return null;
+  }
+  if (!message.ts) {
+    message.ts = item.ts;
+  }
+  if (!messageHasReaction_(message, reactionName)) {
+    message.reactions = message.reactions || [];
+    message.reactions.push({name: normalizeReactionName_(reactionName), count: 1});
+  }
+  return message;
+}
+
 function main() {
   var settings = getSettings();
   return runWithMode_(settings.dryRun, null);
@@ -321,6 +459,7 @@ function scheduledMain() {
     error_count: 0
   };
   var settings = getSettings();
+  ensureScheduledMainTrigger_(settings);
 
   try {
     result.vehicle_linking = runWithMode_(settings.dryRun, null);
@@ -374,6 +513,7 @@ function getSetupStatus_() {
     sheets: {},
     settings: {
       has_slack_bot_token: false,
+      has_slack_event_verification_token: false,
       dry_run: '',
       parent_channel_name: '',
       child_channel_names: '',
@@ -388,6 +528,7 @@ function getSetupStatus_() {
       invoice_reaction_name: '',
       invoice_lookback_days: '',
       invoice_history_limit: '',
+      invoice_history_page_limit: '',
       invoice_reply_thread_limit: '',
       invoice_force_rescan_hours: ''
     },
@@ -416,6 +557,7 @@ function getSetupStatus_() {
     if (settingsSheet) {
       var settings = readSettingsMap_(settingsSheet);
       status.settings.has_slack_bot_token = Boolean(stringValue_(settings.SLACK_BOT_TOKEN));
+      status.settings.has_slack_event_verification_token = Boolean(stringValue_(settings.SLACK_EVENT_VERIFICATION_TOKEN));
       status.settings.dry_run = stringValue_(settingOrDefault_(settings, 'DRY_RUN'));
       status.settings.parent_channel_name = stringValue_(settingOrDefault_(settings, 'PARENT_CHANNEL_NAME'));
       status.settings.child_channel_names = stringValue_(settingOrDefault_(settings, 'CHILD_CHANNEL_NAMES'));
@@ -430,6 +572,7 @@ function getSetupStatus_() {
       status.settings.invoice_reaction_name = stringValue_(settingOrDefault_(settings, 'INVOICE_REACTION_NAME'));
       status.settings.invoice_lookback_days = stringValue_(settingOrDefault_(settings, 'INVOICE_LOOKBACK_DAYS'));
       status.settings.invoice_history_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_HISTORY_LIMIT'));
+      status.settings.invoice_history_page_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_HISTORY_PAGE_LIMIT'));
       status.settings.invoice_reply_thread_limit = stringValue_(settingOrDefault_(settings, 'INVOICE_REPLY_THREAD_LIMIT'));
       status.settings.invoice_force_rescan_hours = stringValue_(settingOrDefault_(settings, 'INVOICE_FORCE_RESCAN_HOURS'));
     }
@@ -494,7 +637,9 @@ function createSheets() {
     sheet.setFrozenRows(1);
     sheet.autoResizeColumns(1, SHEET_HEADERS[sheetName].length);
   });
-  seedDefaultSettings_(spreadsheet.getSheetByName('settings'));
+  var settingsSheet = spreadsheet.getSheetByName('settings');
+  seedDefaultSettings_(settingsSheet);
+  upgradeInvoiceSafetySettings_(settingsSheet);
   return spreadsheet;
 }
 
@@ -546,6 +691,16 @@ function deleteTriggers() {
   });
 }
 
+function ensureScheduledMainTrigger_(settings) {
+  var triggers = ScriptApp.getProjectTriggers().filter(function(trigger) {
+    return trigger.getHandlerFunction() === SCHEDULED_HANDLER_FUNCTION;
+  });
+  var expectedCount = settings.mainTriggerIntervalHours ? 1 : settings.mainTriggerHours.length;
+  if (triggers.length !== expectedCount) {
+    createDailyTrigger();
+  }
+}
+
 function getSettings() {
   var spreadsheet = createSheets();
   var sheet = spreadsheet.getSheetByName('settings');
@@ -565,6 +720,7 @@ function getSettings() {
   return {
     slackBotToken: token,
     teamDomain: stringValue_(settingOrDefault_(raw, 'TEAM_DOMAIN')),
+    slackEventVerificationToken: stringValue_(settingOrDefault_(raw, 'SLACK_EVENT_VERIFICATION_TOKEN')),
     parentChannelName: stringValue_(settingOrDefault_(raw, 'PARENT_CHANNEL_NAME')),
     childChannelNames: childChannelNames,
     lookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'LOOKBACK_DAYS'), 60),
@@ -580,10 +736,11 @@ function getSettings() {
     }),
     invoiceTargetChannelName: stringValue_(settingOrDefault_(raw, 'INVOICE_TARGET_CHANNEL_NAME')),
     invoiceReactionName: normalizeReactionName_(settingOrDefault_(raw, 'INVOICE_REACTION_NAME')),
-    invoiceLookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_LOOKBACK_DAYS'), 7),
-    invoiceHistoryLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_LIMIT'), 50),
-    invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 10),
-    invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 6),
+    invoiceLookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_LOOKBACK_DAYS'), 30),
+    invoiceHistoryLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_LIMIT'), 100),
+    invoiceHistoryPageLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_PAGE_LIMIT'), 3),
+    invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 25),
+    invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 3),
     invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN'))
   };
 }
@@ -885,12 +1042,14 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     reaction_name: '',
     lookback_days: 0,
     history_limit: 0,
+    history_page_limit: 0,
     reply_thread_limit: 0,
     force_rescan_hours: 0,
     channels_checked: 0,
     channels_scanned: 0,
     channels_skipped_unchanged: 0,
     messages_checked: 0,
+    history_pages_scanned: 0,
     reply_threads_checked: 0,
     reply_messages_checked: 0,
     candidates_found: 0,
@@ -913,6 +1072,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     stats.reaction_name = settings.invoiceReactionName;
     stats.lookback_days = lookbackDaysOverride || settings.invoiceLookbackDays;
     stats.history_limit = Math.min(historyLimitOverride || settings.invoiceHistoryLimit, 200);
+    stats.history_page_limit = settings.invoiceHistoryPageLimit;
     stats.reply_thread_limit = settings.invoiceReplyThreadLimit;
     stats.force_rescan_hours = settings.invoiceForceRescanHours;
 
@@ -949,6 +1109,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
           dryRunOverride,
           stats.lookback_days,
           stats.history_limit,
+          stats.history_page_limit,
           stateByChannelId[sourceChannel.id] || null
         );
       } catch (error) {
@@ -974,7 +1135,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
   return stats;
 }
 
-function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings, channelStats, dryRunOverride, lookbackDays, historyLimit, previousState) {
+function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings, channelStats, dryRunOverride, lookbackDays, historyLimit, historyPageLimit, previousState) {
   channelStats.last_checked_at = nowIso_();
   var latestResponse = slackApi('conversations.history', {
     channel: sourceChannel.id,
@@ -1008,15 +1169,18 @@ function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings,
     : 'first_scan';
   channelStats.last_full_scan_at = channelStats.last_checked_at;
 
-  var response = slackApi('conversations.history', {
-    channel: sourceChannel.id,
-    limit: historyLimit,
-    oldest: cutoffSlackTs_(lookbackDays),
-    inclusive: true
-  });
-  var messages = response.messages || [];
+  var scanFromLatestOnly = previousState && hasNewMessages && !forceRescan;
+  var history = collectInvoiceHistoryMessages_(
+    sourceChannel.id,
+    scanFromLatestOnly ? previousLatestTs : cutoffSlackTs_(lookbackDays),
+    historyLimit,
+    historyPageLimit,
+    !scanFromLatestOnly
+  );
+  var messages = history.messages;
   channelStats.messages_checked = messages.length;
-  channelStats.history_next_cursor_found = Boolean(response.response_metadata && response.response_metadata.next_cursor);
+  channelStats.history_pages_scanned = history.pages_scanned;
+  channelStats.history_next_cursor_found = history.next_cursor_found;
   channelStats.last_scanned_latest_ts = latestTs;
 
   messages.forEach(function(message) {
@@ -1047,9 +1211,11 @@ function makeInvoiceChannelStats_(sourceChannel, rootStats) {
     reaction_name: rootStats.reaction_name,
     lookback_days: rootStats.lookback_days,
     history_limit: rootStats.history_limit,
+    history_page_limit: rootStats.history_page_limit,
     reply_thread_limit: rootStats.reply_thread_limit,
     latest_messages_checked: 0,
     messages_checked: 0,
+    history_pages_scanned: 0,
     reply_threads_checked: 0,
     reply_messages_checked: 0,
     candidates_found: 0,
@@ -1079,6 +1245,7 @@ function mergeInvoiceChannelStats_(stats, channelStats) {
     stats.channels_scanned += 1;
   }
   stats.messages_checked += channelStats.messages_checked;
+  stats.history_pages_scanned += channelStats.history_pages_scanned;
   stats.reply_threads_checked += channelStats.reply_threads_checked;
   stats.reply_messages_checked += channelStats.reply_messages_checked;
   stats.candidates_found += channelStats.candidates_found;
@@ -1105,6 +1272,37 @@ function shouldForceInvoiceChannelRescan_(previousState, forceRescanHours) {
     return true;
   }
   return Date.now() - parsed >= forceRescanHours * 60 * 60 * 1000;
+}
+
+function collectInvoiceHistoryMessages_(channelId, oldestTs, historyLimit, historyPageLimit, inclusive) {
+  var messages = [];
+  var cursor = '';
+  var pagesScanned = 0;
+  var nextCursorFound = false;
+  do {
+    var payload = {
+      channel: channelId,
+      limit: historyLimit,
+      oldest: oldestTs,
+      inclusive: Boolean(inclusive)
+    };
+    if (cursor) {
+      payload.cursor = cursor;
+    }
+    var response = slackApi('conversations.history', payload);
+    pagesScanned += 1;
+    messages = messages.concat(response.messages || []);
+    cursor = response.response_metadata && response.response_metadata.next_cursor
+      ? response.response_metadata.next_cursor
+      : '';
+    nextCursorFound = Boolean(cursor);
+  } while (cursor && pagesScanned < historyPageLimit);
+
+  return {
+    messages: messages,
+    pages_scanned: pagesScanned,
+    next_cursor_found: nextCursorFound
+  };
 }
 
 function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetChannel, settings, stats, dryRunOverride) {
@@ -1312,7 +1510,8 @@ function readInvoiceChannelScanState_() {
       duplicate_skipped_count: parsePositiveInteger_(row[12], 0),
       skipped_unchanged: parseBoolean_(row[13]),
       last_error: stringValue_(row[14]),
-      dry_run: parseBoolean_(row[15])
+      dry_run: parseBoolean_(row[15]),
+      history_pages_scanned: parsePositiveInteger_(row[16], 0)
     };
   }
   return stateByChannelId;
@@ -1336,7 +1535,8 @@ function saveInvoiceChannelScanState_(record) {
     record.duplicate_skipped_count || 0,
     String(Boolean(record.skipped_unchanged)),
     record.last_error || '',
-    String(Boolean(record.dry_run))
+    String(Boolean(record.dry_run)),
+    record.history_pages_scanned || 0
   ].map(function(value) {
     return stringValue_(value);
   });
@@ -2410,6 +2610,24 @@ function seedDefaultSettings_(sheet) {
   });
 }
 
+function upgradeInvoiceSafetySettings_(sheet) {
+  var upgrades = {
+    INVOICE_LOOKBACK_DAYS: {from: '7', to: '30'},
+    INVOICE_HISTORY_LIMIT: {from: '50', to: '100'},
+    INVOICE_HISTORY_PAGE_LIMIT: {from: '', to: '3'},
+    INVOICE_REPLY_THREAD_LIMIT: {from: '10', to: '25'},
+    INVOICE_FORCE_RESCAN_HOURS: {from: '6', to: '3'}
+  };
+  var settings = readSettingsMap_(sheet);
+  Object.keys(upgrades).forEach(function(key) {
+    var current = stringValue_(settings[key]).trim();
+    var upgrade = upgrades[key];
+    if (current === upgrade.from) {
+      upsertSetting_(sheet, key, upgrade.to, settingMemo_(key));
+    }
+  });
+}
+
 function readSettingsMap_(sheet) {
   var values = sheet.getDataRange().getValues();
   var map = {};
@@ -2464,6 +2682,7 @@ function settingMemo_(key) {
   var memos = {
     SLACK_BOT_TOKEN: 'xoxb-で始まるBot Token。Script Propertiesにも同期します。',
     TEAM_DOMAIN: '任意。Slackチームドメインの控えです。',
+    SLACK_EVENT_VERIFICATION_TOKEN: '任意。Slack Events APIを使う場合だけ、Basic InformationのVerification Tokenを入れます。',
     PARENT_CHANNEL_NAME: '大親チャンネル名。',
     CHILD_CHANNEL_NAMES: '子チャンネル名をカンマ区切りで指定します。',
     LOOKBACK_DAYS: '最終更新日時がこの日数以内のスレッドだけ対象にします。',

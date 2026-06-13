@@ -80,6 +80,14 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - `invoice_channel_scan_state` にチャンネルごとの最終確認時刻、最後にフルスキャンした時刻、最新投稿ts、確認件数、候補数、投稿数、重複スキップ数、エラーを保存する。
 - 通常は最新投稿tsが変わったチャンネルだけフルスキャンし、新着がないチャンネルはスキップする。後付けスタンプ対策として `INVOICE_FORCE_RESCAN_HOURS` を過ぎたチャンネルは新着がなくても再スキャンする。
 - スタンプが押された瞬間に転送するには、将来Slack Events APIの `reaction_added` をGAS `doPost` で受ける設計に進める。
+
+## 2026-06-14 Invoice Monitoring Hardening
+
+- 旧デフォルトの `INVOICE_LOOKBACK_DAYS=7`、`INVOICE_HISTORY_LIMIT=50`、`INVOICE_REPLY_THREAD_LIMIT=10`、`INVOICE_FORCE_RESCAN_HOURS=6` は、次回実行時に `30`、`100`、`25`、`3` へ自動移行する。
+- `INVOICE_HISTORY_PAGE_LIMIT=3` を追加し、新着検知時は前回最新ts以降、初回/強制再スキャン時はlookback範囲を最大3ページまで追う。
+- 既存の5本トリガーが残っていても、次回 `scheduledMain()` 実行時に期待トリガー数と違えば `MAIN_TRIGGER_INTERVAL_HOURS=1` の毎時トリガーへ作り直す。
+- Slack Events API用に `doPost` の `reaction_added` 受け口を追加する。ただし利用にはWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_VERIFICATION_TOKEN` をsettingsシートへ入れる必要がある。
+- それでもBot未参加チャンネル、lookback外の古い投稿、ページ上限超過、返信rootが範囲外、Slack API/GAS実行時間エラーでは送信漏れまたは遅延があり得る。
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
