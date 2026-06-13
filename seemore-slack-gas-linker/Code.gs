@@ -2,14 +2,20 @@ var APP_NAME = 'SEEMORE Slack車案件リンク管理';
 var SPREADSHEET_NAME = 'SEEMORE_Slack車案件リンク管理';
 var SPREADSHEET_ID_PROPERTY = 'SEEMORE_SLACK_LINKS_SPREADSHEET_ID';
 var SLACK_TOKEN_PROPERTY = 'SLACK_BOT_TOKEN';
+var SLACK_EVENT_REQUEST_TOKEN_PROPERTY = 'SLACK_EVENT_REQUEST_TOKEN';
+var WEB_ADMIN_TOKEN_PROPERTY = 'WEB_ADMIN_TOKEN';
 var SCHEDULED_HANDLER_FUNCTION = 'scheduledMain';
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
+var ADMIN_TOKEN_PARAM = 'admin_token';
+var SLACK_EVENT_TOKEN_PARAM = 'slack_event_token';
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
   TEAM_DOMAIN: '',
   SLACK_EVENT_VERIFICATION_TOKEN: '',
+  SLACK_EVENT_REQUEST_TOKEN: '',
+  WEB_ADMIN_TOKEN: '',
   PARENT_CHANNEL_NAME: '依頼_車案件',
   CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
   LOOKBACK_DAYS: '60',
@@ -119,6 +125,10 @@ function setup() {
 
 function doGet(event) {
   var action = event && event.parameter ? event.parameter.action : '';
+  if (action) {
+    requireWebAdmin_(event);
+  }
+
   if (action === 'status') {
     return jsonOutput_(getSetupStatus_());
   }
@@ -132,7 +142,7 @@ function doGet(event) {
   }
 
   if (action === 'slack') {
-    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(null));
+    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(null, webAdminTokenFromEvent_(event)));
   }
 
   if (action === 'test_slack') {
@@ -217,11 +227,7 @@ function doGet(event) {
   if (action !== 'setup') {
     return HtmlService.createHtmlOutput(
       '<p>' + APP_NAME + '</p>' +
-      '<p>セットアップを実行するにはURL末尾に <code>?action=setup</code> を付けて開いてください。</p>' +
-      '<p>状態確認は <code>?action=status</code> です。</p>' +
-      '<p>Slack設定は <code>?action=slack</code> です。</p>' +
-      '<p>Slack疎通確認は <code>?action=test_slack</code>、参加チャンネル確認は <code>?action=joined_channels</code>、ロジック確認は <code>?action=test_logic</code>、dry runは <code>?action=dryrun</code> です。</p>' +
-      '<p>請求書転送の確認は <code>?action=invoice_dryrun</code>、手動本番は <code>?action=invoice_run&amp;confirm=' + INVOICE_FORWARD_CONFIRM_TOKEN + '</code> です。</p>'
+      '<p>Slack Events endpoint is active.</p>'
     );
   }
 
@@ -268,15 +274,38 @@ function runHtmlJsonAction_(callback) {
   }
 }
 
+function requireWebAdmin_(event) {
+  var settings = getSettings();
+  var expected = stringValue_(settings.webAdminToken).trim();
+  if (!expected) {
+    throw new Error('WEB_ADMIN_TOKENが未設定です。setup()を実行してsettingsシートに管理トークンを作成してください。');
+  }
+  if (webAdminTokenFromEvent_(event) !== expected) {
+    throw new Error('管理操作には正しい' + ADMIN_TOKEN_PARAM + 'が必要です。');
+  }
+}
+
+function webAdminTokenFromEvent_(event) {
+  return webParam_(event, ADMIN_TOKEN_PARAM);
+}
+
+function webParam_(event, name) {
+  return stringValue_(event && event.parameter ? event.parameter[name] : '').trim();
+}
+
 function doPost(event) {
   var action = event && event.parameter ? event.parameter.action : '';
   if (action !== 'save_slack_token') {
     var slackEventPayload = parseSlackEventPayload_(event);
     if (slackEventPayload) {
-      return handleSlackEventPayload_(slackEventPayload);
+      if (slackEventPayload.type === 'url_verification') {
+        return handleSlackUrlVerification_(event, slackEventPayload);
+      }
+      return handleSlackEventPayload_(event, slackEventPayload);
     }
     return HtmlService.createHtmlOutput('<p>Unsupported action.</p>');
   }
+  requireWebAdmin_(event);
 
   var token = stringValue_(event.parameter.SLACK_BOT_TOKEN).trim();
   var result = {
@@ -288,7 +317,7 @@ function doPost(event) {
 
   if (!/^xoxb-[A-Za-z0-9-]+$/.test(token)) {
     result.messages.push('SLACK_BOT_TOKENはxoxb-で始まるBot Tokenを入力してください。');
-    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result));
+    return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result, webAdminTokenFromEvent_(event)));
   }
 
   saveSlackBotToken_(token);
@@ -313,7 +342,7 @@ function doPost(event) {
     result.messages.push('チャンネル確認NG: ' + error.message);
   }
 
-  return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result));
+  return HtmlService.createHtmlOutput(renderSlackSettingsPage_(result, webAdminTokenFromEvent_(event)));
 }
 
 function parseSlackEventPayload_(event) {
@@ -329,10 +358,33 @@ function parseSlackEventPayload_(event) {
   }
 }
 
-function handleSlackEventPayload_(payload) {
+function handleSlackUrlVerification_(event, payload) {
+  try {
+    verifySlackEventRequestTokenFast_(event);
+    return ContentService.createTextOutput(stringValue_(payload.challenge));
+  } catch (error) {
+    saveError('handleSlackUrlVerification', error);
+    return jsonOutput_({ok: false, error: error.message});
+  }
+}
+
+function verifySlackEventRequestTokenFast_(event) {
+  var expected = stringValue_(PropertiesService.getScriptProperties().getProperty(SLACK_EVENT_REQUEST_TOKEN_PROPERTY)).trim();
+  if (!expected) {
+    expected = stringValue_(getSettings().slackEventRequestToken).trim();
+  }
+  if (!expected) {
+    throw new Error('SLACK_EVENT_REQUEST_TOKENが未設定です。');
+  }
+  if (webParam_(event, SLACK_EVENT_TOKEN_PARAM) !== expected) {
+    throw new Error('Slack Events request tokenが一致しません。');
+  }
+}
+
+function handleSlackEventPayload_(event, payload) {
   try {
     var settings = getSettings();
-    verifySlackEventToken_(payload, settings);
+    verifySlackEventRequest_(event, payload, settings);
     if (payload.type === 'url_verification') {
       return ContentService.createTextOutput(stringValue_(payload.challenge));
     }
@@ -346,12 +398,16 @@ function handleSlackEventPayload_(payload) {
   }
 }
 
-function verifySlackEventToken_(payload, settings) {
-  var expected = stringValue_(settings.slackEventVerificationToken).trim();
-  if (!expected) {
-    throw new Error('SLACK_EVENT_VERIFICATION_TOKENが未設定です。Slack Events APIを使う場合はsettingsシートへVerification Tokenを入力してください。');
+function verifySlackEventRequest_(event, payload, settings) {
+  var expectedRequestToken = stringValue_(settings.slackEventRequestToken).trim();
+  var expectedVerificationToken = stringValue_(settings.slackEventVerificationToken).trim();
+  if (!expectedRequestToken && !expectedVerificationToken) {
+    throw new Error('SLACK_EVENT_REQUEST_TOKENまたはSLACK_EVENT_VERIFICATION_TOKENが未設定です。Slack Events APIを使う場合はsettingsシートへ入力してください。');
   }
-  if (stringValue_(payload.token) !== expected) {
+  if (expectedRequestToken && webParam_(event, SLACK_EVENT_TOKEN_PARAM) !== expectedRequestToken) {
+    throw new Error('Slack Events request tokenが一致しません。');
+  }
+  if (expectedVerificationToken && stringValue_(payload.token) !== expectedVerificationToken) {
     throw new Error('Slack Events verification tokenが一致しません。');
   }
 }
@@ -515,6 +571,8 @@ function getSetupStatus_() {
     settings: {
       has_slack_bot_token: false,
       has_slack_event_verification_token: false,
+      has_slack_event_request_token: false,
+      has_web_admin_token: false,
       dry_run: '',
       parent_channel_name: '',
       child_channel_names: '',
@@ -560,6 +618,8 @@ function getSetupStatus_() {
       var settings = readSettingsMap_(settingsSheet);
       status.settings.has_slack_bot_token = Boolean(stringValue_(settings.SLACK_BOT_TOKEN));
       status.settings.has_slack_event_verification_token = Boolean(stringValue_(settings.SLACK_EVENT_VERIFICATION_TOKEN));
+      status.settings.has_slack_event_request_token = Boolean(stringValue_(settings.SLACK_EVENT_REQUEST_TOKEN));
+      status.settings.has_web_admin_token = Boolean(stringValue_(settings.WEB_ADMIN_TOKEN));
       status.settings.dry_run = stringValue_(settingOrDefault_(settings, 'DRY_RUN'));
       status.settings.parent_channel_name = stringValue_(settingOrDefault_(settings, 'PARENT_CHANNEL_NAME'));
       status.settings.child_channel_names = stringValue_(settingOrDefault_(settings, 'CHILD_CHANNEL_NAMES'));
@@ -595,7 +655,7 @@ function getSetupStatus_() {
   return status;
 }
 
-function renderSlackSettingsPage_(result) {
+function renderSlackSettingsPage_(result, adminToken) {
   var actionUrl = ScriptApp.getService().getUrl();
   var status = getSetupStatus_();
   var messages = result && result.messages ? result.messages : [];
@@ -620,12 +680,13 @@ function renderSlackSettingsPage_(result) {
     messageHtml,
     '<form method="post" action="' + escapeHtml_(actionUrl) + '">',
     '<input type="hidden" name="action" value="save_slack_token">',
+    '<input type="hidden" name="' + escapeHtml_(ADMIN_TOKEN_PARAM) + '" value="' + escapeHtml_(adminToken || '') + '">',
     '<p><input type="password" name="SLACK_BOT_TOKEN" placeholder="xoxb-..." style="width: 420px;"></p>',
     '<p><button type="submit">保存してSlack疎通確認</button></p>',
     '</form>',
     '<h2>現在状態</h2>',
     '<pre>' + escapeHtml_(statusText) + '</pre>',
-    '<p><a href="' + escapeHtml_(actionUrl) + '?action=status" target="_blank">JSON状態確認</a></p>'
+    '<p><a href="' + escapeHtml_(actionUrl) + '?action=status&amp;' + escapeHtml_(ADMIN_TOKEN_PARAM) + '=' + encodeURIComponent(adminToken || '') + '" target="_blank">JSON状態確認</a></p>'
   ].join('');
 }
 
@@ -643,6 +704,8 @@ function createSheets() {
   var settingsSheet = spreadsheet.getSheetByName('settings');
   seedDefaultSettings_(settingsSheet);
   upgradeInvoiceSafetySettings_(settingsSheet);
+  ensureGeneratedSecretSetting_(settingsSheet, 'SLACK_EVENT_REQUEST_TOKEN', 'slackevt_');
+  ensureGeneratedSecretSetting_(settingsSheet, 'WEB_ADMIN_TOKEN', 'admin_');
   return spreadsheet;
 }
 
@@ -716,6 +779,18 @@ function getSettings() {
   if (tokenFromSheet) {
     properties.setProperty(SLACK_TOKEN_PROPERTY, tokenFromSheet);
   }
+  var slackEventRequestTokenFromSheet = stringValue_(settingOrDefault_(raw, 'SLACK_EVENT_REQUEST_TOKEN'));
+  var slackEventRequestTokenFromProperties = stringValue_(properties.getProperty(SLACK_EVENT_REQUEST_TOKEN_PROPERTY));
+  var slackEventRequestToken = slackEventRequestTokenFromSheet || slackEventRequestTokenFromProperties;
+  if (slackEventRequestTokenFromSheet) {
+    properties.setProperty(SLACK_EVENT_REQUEST_TOKEN_PROPERTY, slackEventRequestTokenFromSheet);
+  }
+  var webAdminTokenFromSheet = stringValue_(settingOrDefault_(raw, 'WEB_ADMIN_TOKEN'));
+  var webAdminTokenFromProperties = stringValue_(properties.getProperty(WEB_ADMIN_TOKEN_PROPERTY));
+  var webAdminToken = webAdminTokenFromSheet || webAdminTokenFromProperties;
+  if (webAdminTokenFromSheet) {
+    properties.setProperty(WEB_ADMIN_TOKEN_PROPERTY, webAdminTokenFromSheet);
+  }
 
   var childChannelNames = parseCommaSeparatedSetting_(settingOrDefault_(raw, 'CHILD_CHANNEL_NAMES'));
   var invoiceSourceChannelNames = parseInvoiceSourceChannelNames_(raw);
@@ -724,6 +799,8 @@ function getSettings() {
     slackBotToken: token,
     teamDomain: stringValue_(settingOrDefault_(raw, 'TEAM_DOMAIN')),
     slackEventVerificationToken: stringValue_(settingOrDefault_(raw, 'SLACK_EVENT_VERIFICATION_TOKEN')),
+    slackEventRequestToken: slackEventRequestToken,
+    webAdminToken: webAdminToken,
     parentChannelName: stringValue_(settingOrDefault_(raw, 'PARENT_CHANNEL_NAME')),
     childChannelNames: childChannelNames,
     lookbackDays: parsePositiveInteger_(settingOrDefault_(raw, 'LOOKBACK_DAYS'), 60),
@@ -771,6 +848,33 @@ function saveSettings(settings) {
   var token = stringValue_(readSettingsMap_(sheet).SLACK_BOT_TOKEN);
   if (token) {
     PropertiesService.getScriptProperties().setProperty(SLACK_TOKEN_PROPERTY, token);
+  }
+}
+
+function ensureGeneratedSecretSetting_(sheet, key, prefix) {
+  var settings = readSettingsMap_(sheet);
+  if (stringValue_(settings[key]).trim()) {
+    syncSecretSettingToProperty_(key, settings[key]);
+    return;
+  }
+  var generated = prefix + generateSecretToken_();
+  upsertSetting_(sheet, key, generated, settingMemo_(key));
+  syncSecretSettingToProperty_(key, generated);
+}
+
+function generateSecretToken_() {
+  return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+}
+
+function syncSecretSettingToProperty_(key, value) {
+  var propertyName = '';
+  if (key === 'SLACK_EVENT_REQUEST_TOKEN') {
+    propertyName = SLACK_EVENT_REQUEST_TOKEN_PROPERTY;
+  } else if (key === 'WEB_ADMIN_TOKEN') {
+    propertyName = WEB_ADMIN_TOKEN_PROPERTY;
+  }
+  if (propertyName && stringValue_(value).trim()) {
+    PropertiesService.getScriptProperties().setProperty(propertyName, stringValue_(value).trim());
   }
 }
 
@@ -2676,14 +2780,18 @@ function readSettingsMap_(sheet) {
 
 function upsertSetting_(sheet, key, value, memo) {
   var lastRow = Math.max(sheet.getLastRow(), 1);
+  var rowIndex = 0;
   if (lastRow >= 2) {
     var keys = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
     for (var i = 0; i < keys.length; i += 1) {
       if (keys[i][0] === key) {
-        sheet.getRange(i + 2, 2, 1, 2).setValues([[value, memo || '']]);
-        return;
+        rowIndex = i + 2;
       }
     }
+  }
+  if (rowIndex) {
+    sheet.getRange(rowIndex, 2, 1, 2).setValues([[value, memo || '']]);
+    return;
   }
   sheet.appendRow([key, value, memo || '']);
 }
@@ -2717,6 +2825,8 @@ function settingMemo_(key) {
     SLACK_BOT_TOKEN: 'xoxb-で始まるBot Token。Script Propertiesにも同期します。',
     TEAM_DOMAIN: '任意。Slackチームドメインの控えです。',
     SLACK_EVENT_VERIFICATION_TOKEN: '任意。Slack Events APIを使う場合だけ、Basic InformationのVerification Tokenを入れます。',
+    SLACK_EVENT_REQUEST_TOKEN: 'Slack Events APIのRequest URLに付ける共有トークンです。自動生成されます。',
+    WEB_ADMIN_TOKEN: '公開Webアプリの管理操作に必要なトークンです。自動生成されます。',
     PARENT_CHANNEL_NAME: '大親チャンネル名。',
     CHILD_CHANNEL_NAMES: '子チャンネル名をカンマ区切りで指定します。',
     LOOKBACK_DAYS: '最終更新日時がこの日数以内のスレッドだけ対象にします。',

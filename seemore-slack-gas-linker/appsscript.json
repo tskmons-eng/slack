@@ -7,7 +7,7 @@
     "access": "MYSELF"
   },
   "webapp": {
-    "access": "MYSELF",
+    "access": "ANYONE_ANONYMOUS",
     "executeAs": "USER_DEPLOYING"
   },
   "oauthScopes": [

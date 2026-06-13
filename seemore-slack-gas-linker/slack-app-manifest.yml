@@ -17,6 +17,9 @@ oauth_config:
       - files:read
       - chat:write
 settings:
+  event_subscriptions:
+    bot_events:
+      - reaction_added
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false

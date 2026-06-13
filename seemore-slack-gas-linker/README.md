@@ -50,7 +50,7 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 
 新着が多いチャンネルで直近1ページから漏れないよう、`conversations.history` は `INVOICE_HISTORY_PAGE_LIMIT` ページまで追います。初回と強制再スキャンは `INVOICE_LOOKBACK_DAYS` の範囲、新着検知時は前回見た最新投稿以降を確認します。
 
-スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。コード側の受け口は用意済みですが、使う場合はWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_VERIFICATION_TOKEN` をsettingsシートへ入れてからSlack側でEvent Subscriptionsを有効にしてください。通常のポーリング方式も併用されます。
+スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。WebアプリはSlackから到達できるよう `ANYONE_ANONYMOUS` で公開しますが、管理系のGET/POST操作は `WEB_ADMIN_TOKEN` がないと動きません。Slack EventsのRequest URLには `SLACK_EVENT_REQUEST_TOKEN` を `slack_event_token` パラメータとして付けます。通常のポーリング方式も併用されます。
 
 2026-06-14時点の運用想定:
 
@@ -61,6 +61,16 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 - 車体番号/スレIDの紐付けは、別チャンネルの過去スレッドとの照合が必要なため、Slack Events APIだけでは代替せず、定期クロールを継続します。
 
 Slack Events APIは通常のSlack AppのEvent Subscriptionsで受けます。別の有料ワークフロー機能ではありません。ただし、GAS WebアプリをSlackから到達できるURLとして公開する必要があり、本人限定デプロイのままではSlackからイベントを送れません。
+
+Slack Events APIのRequest URL形式:
+
+```text
+https://script.google.com/macros/s/{deployment_id}/exec?slack_event_token={SLACK_EVENT_REQUEST_TOKEN}
+```
+
+Slack App側では Event Subscriptions を有効にし、Bot Eventsに `reaction_added` を追加します。
+
+SlackのURL検証は短時間応答が必要です。`SLACK_EVENT_REQUEST_TOKEN` は `settings` シートだけでなくScript Propertiesにも同期し、`url_verification` ではシートを読まずに応答します。
 
 ## 必要なSlack Bot Scopes
 
@@ -93,7 +103,7 @@ chat:write
 10. `testSlackAuth()`、`testFindChannels()`、`testDryRunOnce()` を実行して確認する。
 11. `dry_run_logs` を確認し、問題なければ `settings` シートの `DRY_RUN` を `false` にする。
 
-Codexから `clasp` で配置する場合は、GASをWebアプリとしてデプロイし、`/exec?action=setup` を開いて `setup()` を実行できます。Webアプリ設定は `MYSELF` / `USER_DEPLOYING` のため、デプロイしたGoogleユーザー本人だけが実行できます。
+Codexから `clasp` で配置する場合は、GASをWebアプリとしてデプロイし、`/exec?action=setup&admin_token=...` を開いて `setup()` を実行できます。Webアプリ設定はSlack Events API用に `ANYONE_ANONYMOUS` / `USER_DEPLOYING` です。管理系アクションには `settings` シートの `WEB_ADMIN_TOKEN` を `admin_token` パラメータとして付けます。
 
 ## Slack App作成手順
 
@@ -162,6 +172,8 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `SLACK_BOT_TOKEN` | 空 | ユーザー様が `xoxb-...` を入力します。Script Propertiesにも同期されます。 |
 | `TEAM_DOMAIN` | 空 | 任意の控えです。処理には必須ではありません。 |
 | `SLACK_EVENT_VERIFICATION_TOKEN` | 空 | Slack Events APIを使う場合だけ、Slack AppのVerification Tokenを入力します。 |
+| `SLACK_EVENT_REQUEST_TOKEN` | 自動生成 | Slack Events APIのRequest URLに付ける共有トークンです。URLへ `slack_event_token` として付けます。 |
+| `WEB_ADMIN_TOKEN` | 自動生成 | 公開Webアプリの管理操作に必要なトークンです。URLへ `admin_token` として付けます。 |
 | `PARENT_CHANNEL_NAME` | `依頼_車案件` | 大親チャンネル名です。 |
 | `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |

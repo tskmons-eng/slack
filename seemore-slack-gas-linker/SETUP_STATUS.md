@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-14 01:31 JST
+Last updated: 2026-06-14 02:27 JST
 
 ## Completed
 
@@ -126,12 +126,28 @@ Last updated: 2026-06-14 01:31 JST
 - Documented the current operating assumptions: about 6 monitored channels, low new-post volume, frequent old-thread replies, 1-hour delay acceptable, and both missed sends and false sends should be avoided.
 - Documented that Slack Events API can provide near-instant invoice rocket forwarding, but vehicle/thread linking still needs scheduled crawling for past-thread comparison.
 
+## 2026-06-14 Version 42 Slack Events Activation
+
+- Web app manifest was changed to `ANYONE_ANONYMOUS` / `USER_DEPLOYING` so Slack can reach the Events API endpoint.
+- Public admin actions are protected by `WEB_ADMIN_TOKEN`; Slack Events posts require `SLACK_EVENT_REQUEST_TOKEN` through the `slack_event_token` URL parameter.
+- `SLACK_EVENT_REQUEST_TOKEN` and `WEB_ADMIN_TOKEN` were generated and saved in the settings sheet; the current Events URL is stored only in ignored local file `events-endpoint.local.json`.
+- `upsertSetting_()` now updates the last matching settings row so duplicate setting keys cannot leave stale values winning over newer overrides.
+- Slack `url_verification` now verifies the request token through Script Properties before touching Sheets, avoiding Slack verification timeouts.
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
+- `clasp push` succeeded, and both the self setup web deployment and API executable deployment were updated to version 42.
+- GAS status check confirmed `scheduled_trigger_count=1`, `scheduled_trigger_mode=every_1_hours`, `INVOICE_SOURCE_CHANNEL_NAMES=*`, `INVOICE_REPLY_THREAD_LIMIT=25`, and `INVOICE_FORCE_RESCAN_HOURS=3`.
+- Slack App `A0B9TSCGZAR` Event Subscriptions were enabled in the Slack API UI.
+- Slack Request URL verification showed `Verified`.
+- Slack Bot Events includes `reaction_added` with required scope `reactions:read`.
+- Slack Delayed Events is `On`, so Slack will retry missed event deliveries over 24 hours.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 37
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 37
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 42
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 42
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -146,12 +162,13 @@ Last updated: 2026-06-14 01:31 JST
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.
 - `LOOKBACK_DAYS=60`.
-- Last browser-verified `scheduledMain()` triggers: 5 from version 31. Version 35 changes the desired schedule to one hourly trigger, but the existing triggers must be replaced by opening `?action=setup` or running `createDailyTrigger()` as the deploying Google user.
-- Desired schedule after version 35 setup: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
+- Last verified `scheduledMain()` trigger count: 1.
+- Desired schedule: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
 - `SLACK_BOT_TOKEN` is saved.
 - Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=10`; current verified test forwarded one PDF from a thread reply and then skipped the duplicate on the next dry run.
 - Invoice forwarding also supports rocket-marked messages without PDF files; those post the labeled source Slack link without forwarding a PDF file.
 - Desired invoice runtime guard: `INVOICE_MAX_RUNTIME_SECONDS=300`.
+- Slack Events API is active for `reaction_added`; hourly polling remains as a backup.
 - Automatic internal Slack links use labeled text plus source-post attachment cards because Slack native unfurls can differ between manual shares and bot posts. Existing invoice posts were refreshed to the same format.
 
 ## Verified Slack App

@@ -11,3 +11,5 @@ seemore-slack-linker/tests/__pycache__/
 # Local GAS deployment tooling
 seemore-slack-gas-linker/node_modules/
 seemore-slack-gas-linker/.clasprc.json
+seemore-slack-gas-linker/*.local.json
+seemore-slack-gas-linker/*.local.md
