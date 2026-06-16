@@ -1482,31 +1482,95 @@ function processInvoiceMessageForForward_(message, sourceChannel, targetChannel,
     return;
   }
 
-  var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
-  var text = invoiceForwardMessage_(pdfFile ? invoiceFileName_(pdfFile) : '', sourceUrl);
-  var attachments = invoiceForwardAttachments_(message, sourceChannel.name, sourceUrl, pdfFile);
   if (dryRunOverride) {
     stats.planned_count += 1;
     return;
   }
 
-  var postResponse = postChannelMessage(targetChannel.id, text, attachments);
-  saveInvoiceReactionPost_({
-    processed_at: nowIso_(),
-    source_channel_name: sourceChannel.name,
-    source_channel_id: sourceChannel.id,
-    source_message_ts: sourceMessageTs,
-    source_url: sourceUrl,
-    file_id: fileId,
-    file_name: pdfFile ? invoiceFileName_(pdfFile) : '',
-    reaction_name: normalizeReactionName_(settings.invoiceReactionName),
-    target_channel_name: targetChannel.name,
-    target_channel_id: targetChannel.id,
-    posted_ts: postResponse.ts || '',
-    posted_text: text,
-    dry_run: false
+  withInvoiceForwardPostLock_(function() {
+    if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
+      stats.duplicate_skipped_count += 1;
+      return;
+    }
+
+    var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
+    if (invoiceTargetChannelAlreadyContainsSourceUrl_(targetChannel.id, sourceUrl)) {
+      stats.duplicate_skipped_count += 1;
+      return;
+    }
+
+    var text = invoiceForwardMessage_(pdfFile ? invoiceFileName_(pdfFile) : '', sourceUrl);
+    var attachments = invoiceForwardAttachments_(message, sourceChannel.name, sourceUrl, pdfFile);
+    var postResponse = postChannelMessage(targetChannel.id, text, attachments);
+    saveInvoiceReactionPost_({
+      processed_at: nowIso_(),
+      source_channel_name: sourceChannel.name,
+      source_channel_id: sourceChannel.id,
+      source_message_ts: sourceMessageTs,
+      source_url: sourceUrl,
+      file_id: fileId,
+      file_name: pdfFile ? invoiceFileName_(pdfFile) : '',
+      reaction_name: normalizeReactionName_(settings.invoiceReactionName),
+      target_channel_name: targetChannel.name,
+      target_channel_id: targetChannel.id,
+      posted_ts: postResponse.ts || '',
+      posted_text: text,
+      dry_run: false
+    });
+    stats.posted_count += 1;
   });
-  stats.posted_count += 1;
+}
+
+function withInvoiceForwardPostLock_(callback) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function invoiceTargetChannelAlreadyContainsSourceUrl_(targetChannelId, sourceUrl) {
+  var cursor = '';
+  var pagesScanned = 0;
+  do {
+    var payload = {
+      channel: targetChannelId,
+      limit: 100
+    };
+    if (cursor) {
+      payload.cursor = cursor;
+    }
+
+    var response = slackApi('conversations.history', payload);
+    var messages = response.messages || [];
+    if (messages.some(function(message) {
+      return invoiceMessageContainsSourceUrl_(message, sourceUrl);
+    })) {
+      return true;
+    }
+
+    cursor = response.response_metadata && response.response_metadata.next_cursor
+      ? response.response_metadata.next_cursor
+      : '';
+    pagesScanned += 1;
+  } while (cursor && pagesScanned < 2);
+  return false;
+}
+
+function invoiceMessageContainsSourceUrl_(message, sourceUrl) {
+  if (textContainsSlackUrl_(message.text, sourceUrl)) {
+    return true;
+  }
+
+  return (message.attachments || []).some(function(attachment) {
+    return textContainsSlackUrl_(attachment.text, sourceUrl) ||
+      textContainsSlackUrl_(attachment.title, sourceUrl) ||
+      textContainsSlackUrl_(attachment.title_link, sourceUrl) ||
+      textContainsSlackUrl_(attachment.from_url, sourceUrl) ||
+      textContainsSlackUrl_(attachment.original_url, sourceUrl);
+  });
 }
 
 function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl, targetUrl) {

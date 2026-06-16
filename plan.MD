@@ -107,6 +107,14 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - Slack AppのEvent SubscriptionsでRequest URLを設定し、Bot Eventsに `reaction_added` を追加する。
 - version 42でSlack Events APIを有効化済み。Slack側はEnable Events On、Request URL Verified、Delayed Events On、Bot Event `reaction_added` 登録済み。
 - Slack `url_verification` はScript Properties上の `SLACK_EVENT_REQUEST_TOKEN` で即応答し、シート読み込みによるタイムアウトを避ける。
+
+## 2026-06-16 Invoice Duplicate Forward Hardening
+
+- 請求書ロケット転送はSlack Events APIの再送、またはEventsと1時間ポーリングが重なった場合に備え、投稿直前から `invoice_reaction_posts` 記録完了までScript Lockで直列化する。
+- ロック内で同じ元チャンネル、元投稿ts、PDFキー、リアクションの転送済み確認を再実行し、先行実行が投稿済みなら後続実行は `duplicate_skipped_count` としてスキップする。
+- `invoice_reaction_posts` への記録前に再実行された場合にも備え、投稿先チャンネルの直近履歴に同じ元投稿URLがあればスキップする。
+- ロック取得待ちは30秒までにし、ロック待ちやSlack APIの一時失敗で転送できなかった場合は次回の1時間ポーリングで再確認する。
+
 ## 2026-06-12 Gmail Slack Link Fix
 
 - Gmail to Slack 通知のリンクは TinyURL を経由しない。Slack の表示リンクで Gmail 直リンクを出し、外部短縮APIの遅延を避ける。
