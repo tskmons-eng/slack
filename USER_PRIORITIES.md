@@ -58,3 +58,10 @@
 ## GitHub Publishing
 
 - GitHubへの初回公開は、毎回手作業でremoteを組み立てず、`scripts/publish-to-github.ps1` を使ってrepo作成またはremote設定とpushを標準化する。
+
+## Vehicle Inspection OCR
+
+- 車検証OCRは、単に全文OCRできることより、必要項目を高精度で抜き出してSlackへ文字で返せることを優先する。
+- 車検証はスキャン前提で、画像サイズが違っても帳票の比率はだいたい同じという前提を活かす。
+- 多少のしわや癖があっても吸収できる設計を目指す。
+- まずは実物サンプルで精度確認し、机上の比較だけでAPIを決め打ちしない。
