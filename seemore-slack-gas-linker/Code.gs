@@ -14,6 +14,7 @@ var SLACK_EVENT_TOKEN_PARAM = 'slack_event_token';
 var REACTION_FORWARD_DEFAULT_HISTORY_LIMIT = 100;
 var REACTION_FORWARD_DEFAULT_LOOKBACK_DAYS = 30;
 var REACTION_FORWARD_MAX_TEXT_LENGTH = 39000;
+var REACTION_FORWARD_MAX_BLOCK_COUNT = 50;
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
@@ -260,6 +261,14 @@ function doGet(event) {
       }
       return processReactionForwardRules_(false);
     });
+  }
+
+  if (action === 'refresh_reaction_forward_posts') {
+    var refreshReactionForwardConfirm = stringValue_(event.parameter.confirm || '');
+    var refreshReactionForwardLimit = parsePositiveInteger_(event.parameter.limit, 0);
+    return jsonOutput_(runJsonAction_(function() {
+      return refreshReactionForwardPosts_(refreshReactionForwardConfirm, refreshReactionForwardLimit || null);
+    }));
   }
 
   if (action === 'set_reaction_forward_rule') {
@@ -539,6 +548,8 @@ function processSlackReactionEvent_(event, settings) {
     no_pdf_skipped_count: 0,
     empty_message_skipped_count: 0,
     truncated_count: 0,
+    blocks_used_count: 0,
+    blocks_fallback_count: 0,
     error_count: 0,
     invoice_forwarding: null,
     reaction_forwarding: null
@@ -1451,7 +1462,7 @@ function postThreadMessage(channelId, threadTs, text, attachments) {
   return slackApi('chat.postMessage', payload);
 }
 
-function postChannelMessage(channelId, text, attachments) {
+function postChannelMessage(channelId, text, attachments, blocks) {
   var payload = {
     channel: channelId,
     text: text,
@@ -1461,10 +1472,13 @@ function postChannelMessage(channelId, text, attachments) {
   if (attachments && attachments.length) {
     payload.attachments = attachments;
   }
+  if (blocks && blocks.length) {
+    payload.blocks = blocks;
+  }
   return slackApi('chat.postMessage', payload);
 }
 
-function updateChannelMessage(channelId, messageTs, text, attachments) {
+function updateChannelMessage(channelId, messageTs, text, attachments, blocks) {
   var payload = {
     channel: channelId,
     ts: messageTs,
@@ -1475,7 +1489,76 @@ function updateChannelMessage(channelId, messageTs, text, attachments) {
   if (attachments && attachments.length) {
     payload.attachments = attachments;
   }
+  if (blocks && blocks.length) {
+    payload.blocks = blocks;
+  }
   return slackApi('chat.update', payload);
+}
+
+function postReactionForwardPayload_(channelId, postPayload, context) {
+  if (postPayload.blocks && postPayload.blocks.length) {
+    try {
+      var responseWithBlocks = postChannelMessage(channelId, postPayload.text, null, postPayload.blocks);
+      responseWithBlocks.reaction_forward_used_blocks = true;
+      responseWithBlocks.reaction_forward_blocks_fallback = false;
+      return responseWithBlocks;
+    } catch (error) {
+      if (!isSlackBlocksError_(error)) {
+        throw error;
+      }
+      saveError(context + ':blocks_fallback', error);
+      var fallbackResponse = postChannelMessage(channelId, postPayload.text);
+      fallbackResponse.reaction_forward_used_blocks = false;
+      fallbackResponse.reaction_forward_blocks_fallback = true;
+      return fallbackResponse;
+    }
+  }
+
+  var response = postChannelMessage(channelId, postPayload.text);
+  response.reaction_forward_used_blocks = false;
+  response.reaction_forward_blocks_fallback = false;
+  return response;
+}
+
+function updateReactionForwardPayload_(channelId, messageTs, postPayload, context) {
+  if (postPayload.blocks && postPayload.blocks.length) {
+    try {
+      var responseWithBlocks = updateChannelMessage(channelId, messageTs, postPayload.text, null, postPayload.blocks);
+      responseWithBlocks.reaction_forward_used_blocks = true;
+      responseWithBlocks.reaction_forward_blocks_fallback = false;
+      return responseWithBlocks;
+    } catch (error) {
+      if (!isSlackBlocksError_(error)) {
+        throw error;
+      }
+      saveError(context + ':blocks_fallback', error);
+      var fallbackResponse = updateChannelMessage(channelId, messageTs, postPayload.text);
+      fallbackResponse.reaction_forward_used_blocks = false;
+      fallbackResponse.reaction_forward_blocks_fallback = true;
+      return fallbackResponse;
+    }
+  }
+
+  var response = updateChannelMessage(channelId, messageTs, postPayload.text);
+  response.reaction_forward_used_blocks = false;
+  response.reaction_forward_blocks_fallback = false;
+  return response;
+}
+
+function isSlackBlocksError_(error) {
+  var detail = [
+    error && error.message ? error.message : '',
+    error && error.rawResponse ? error.rawResponse : ''
+  ].join(' ');
+  return /invalid_blocks|msg_blocks_too_long|block_kit/.test(detail);
+}
+
+function isSlackMessageNotFoundError_(error) {
+  var detail = [
+    error && error.message ? error.message : '',
+    error && error.rawResponse ? error.rawResponse : ''
+  ].join(' ');
+  return /message_not_found/.test(detail);
 }
 
 function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyLimitOverride) {
@@ -2008,18 +2091,18 @@ function processReactionForwardMessage_(message, sourceChannel, targetChannel, r
   }
 
   var sourceUrl = '';
-  var textResult = buildReactionForwardPostText_(message, rule, sourceUrl);
-  if (!textResult.text && rule.includeSourceLink) {
+  var postPayload = buildReactionForwardPostPayload_(message, rule, sourceUrl);
+  if (!postPayload.text && rule.includeSourceLink) {
     sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
-    textResult = buildReactionForwardPostText_(message, rule, sourceUrl);
+    postPayload = buildReactionForwardPostPayload_(message, rule, sourceUrl);
   }
-  if (!textResult.text) {
+  if (!postPayload.text) {
     stats.empty_message_skipped_count += 1;
     return;
   }
 
   if (dryRunOverride) {
-    if (textResult.truncated) {
+    if (postPayload.truncated) {
       stats.truncated_count += 1;
     }
     stats.planned_count += 1;
@@ -2035,18 +2118,22 @@ function processReactionForwardMessage_(message, sourceChannel, targetChannel, r
     if (!sourceUrl) {
       sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
       if (rule.includeSourceLink) {
-        textResult = buildReactionForwardPostText_(message, rule, sourceUrl);
+        postPayload = buildReactionForwardPostPayload_(message, rule, sourceUrl);
       }
-      if (!textResult.text) {
+      if (!postPayload.text) {
         stats.empty_message_skipped_count += 1;
         return;
       }
     }
-    if (textResult.truncated) {
+    if (postPayload.truncated) {
       stats.truncated_count += 1;
     }
 
-    var postResponse = postChannelMessage(targetChannel.id, textResult.text);
+    var postResponse = postReactionForwardPayload_(
+      targetChannel.id,
+      postPayload,
+      'postReactionForwardMessage:' + rule.ruleName + ':' + sourceMessageTs
+    );
     saveReactionForwardPost_({
       processed_at: nowIso_(),
       rule_name: rule.ruleName,
@@ -2058,11 +2145,17 @@ function processReactionForwardMessage_(message, sourceChannel, targetChannel, r
       target_channel_name: targetChannel.name,
       target_channel_id: targetChannel.id,
       posted_ts: postResponse.ts || '',
-      posted_text: textResult.text,
+      posted_text: postPayload.text,
       post_mode: rule.postMode,
       include_source_link: rule.includeSourceLink,
       dry_run: false
     });
+    if (postResponse.reaction_forward_used_blocks) {
+      stats.blocks_used_count += 1;
+    }
+    if (postResponse.reaction_forward_blocks_fallback) {
+      stats.blocks_fallback_count += 1;
+    }
     stats.posted_count += 1;
   });
 }
@@ -2075,6 +2168,22 @@ function getReactionForwardHistoryMessages_(channelId) {
     inclusive: true
   });
   return response.messages || [];
+}
+
+function getChannelMessageByTs_(channelId, messageTs) {
+  var response = slackApi('conversations.history', {
+    channel: channelId,
+    latest: messageTs,
+    inclusive: true,
+    limit: 1
+  });
+  var messages = response.messages || [];
+  for (var i = 0; i < messages.length; i += 1) {
+    if (normalizeSlackTsForCompare_(messages[i].ts) === normalizeSlackTsForCompare_(messageTs)) {
+      return messages[i];
+    }
+  }
+  throw new Error('Slack message not found: ' + channelId + ':' + messageTs);
 }
 
 function findMatchingReactionForwardRules_(reactionName, sourceChannel) {
@@ -2119,6 +2228,8 @@ function makeReactionForwardStats_(dryRunOverride) {
     duplicate_skipped_count: 0,
     empty_message_skipped_count: 0,
     truncated_count: 0,
+    blocks_used_count: 0,
+    blocks_fallback_count: 0,
     invalid_rule_count: 0,
     error_count: 0,
     last_error: '',
@@ -2135,6 +2246,8 @@ function mergeReactionForwardStats_(target, source) {
     'duplicate_skipped_count',
     'empty_message_skipped_count',
     'truncated_count',
+    'blocks_used_count',
+    'blocks_fallback_count',
     'invalid_rule_count',
     'error_count'
   ].forEach(function(key) {
@@ -2268,6 +2381,15 @@ function normalizeReactionForwardPostMode_(value) {
   return mode || 'copy_text';
 }
 
+function buildReactionForwardPostPayload_(message, rule, sourceUrl) {
+  var textResult = buildReactionForwardPostText_(message, rule, sourceUrl);
+  return {
+    text: textResult.text,
+    blocks: buildReactionForwardPostBlocks_(message, rule, sourceUrl),
+    truncated: textResult.truncated
+  };
+}
+
 function buildReactionForwardPostText_(message, rule, sourceUrl) {
   var text = normalizeCopiedSlackText_(message.text);
   if (!text) {
@@ -2285,6 +2407,67 @@ function buildReactionForwardPostText_(message, rule, sourceUrl) {
     text: text,
     truncated: truncated
   };
+}
+
+function buildReactionForwardPostBlocks_(message, rule, sourceUrl) {
+  var blocks = sanitizeSlackBlocksForForward_(message && message.blocks);
+  if (blocks.length && rule.includeSourceLink && sourceUrl) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: slackLinkText_(sourceUrl, '元投稿を開く')
+      }
+    });
+  }
+  return blocks.slice(0, REACTION_FORWARD_MAX_BLOCK_COUNT);
+}
+
+function sanitizeSlackBlocksForForward_(blocks) {
+  return (blocks || []).map(function(block) {
+    return sanitizeSlackBlockForForward_(block);
+  }).filter(Boolean);
+}
+
+function sanitizeSlackBlockForForward_(block) {
+  if (!block || !block.type) {
+    return null;
+  }
+  var allowedTypes = {
+    section: true,
+    header: true,
+    context: true,
+    divider: true,
+    rich_text: true,
+    image: true
+  };
+  if (!allowedTypes[block.type]) {
+    return null;
+  }
+  var copied = cloneJson_(block);
+  removeSlackBlockIds_(copied);
+  if (copied.type === 'section' && copied.accessory && copied.accessory.type !== 'image') {
+    delete copied.accessory;
+  }
+  return copied;
+}
+
+function removeSlackBlockIds_(value) {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach(removeSlackBlockIds_);
+    return;
+  }
+  delete value.block_id;
+  Object.keys(value).forEach(function(key) {
+    removeSlackBlockIds_(value[key]);
+  });
+}
+
+function cloneJson_(value) {
+  return JSON.parse(JSON.stringify(value || {}));
 }
 
 function normalizeCopiedSlackText_(value) {
@@ -2443,6 +2626,111 @@ function reactionForwardPostRowMatches_(row, ruleName, sourceChannelId, sourceMe
     normalizeSlackTsForCompare_(row[4]) === normalizeSlackTsForCompare_(sourceMessageTs) &&
     normalizeReactionName_(row[6]) === normalizeReactionName_(reactionName) &&
     stringValue_(row[8]) === stringValue_(targetChannelId);
+}
+
+function refreshReactionForwardPosts_(confirm, limitOverride) {
+  if (confirm !== REACTION_FORWARD_CONFIRM_TOKEN) {
+    throw new Error('汎用リアクション転送済み投稿の更新には confirm=' + REACTION_FORWARD_CONFIRM_TOKEN + ' が必要です。');
+  }
+
+  var sheet = createSheets().getSheetByName('reaction_forward_posts');
+  var values = sheet.getDataRange().getValues();
+  var limit = Math.max(1, Math.min(parsePositiveInteger_(limitOverride, 10), 50));
+  var rulesByName = {};
+  readReactionForwardRules_().forEach(function(rule) {
+    rulesByName[rule.ruleName] = rule;
+  });
+  var stats = {
+    checked_rows: Math.max(values.length - 1, 0),
+    limit: limit,
+    considered_count: 0,
+    updated_count: 0,
+    reposted_count: 0,
+    skipped_count: 0,
+    empty_message_skipped_count: 0,
+    blocks_used_count: 0,
+    blocks_fallback_count: 0,
+    error_count: 0,
+    last_error: ''
+  };
+
+  for (var i = values.length - 1; i >= 1 && stats.considered_count < limit; i -= 1) {
+    var row = values[i];
+    var dryRun = parseBoolean_(row[13]);
+    var ruleName = stringValue_(row[1]);
+    var sourceChannelName = stringValue_(row[2]);
+    var sourceChannelId = stringValue_(row[3]);
+    var sourceMessageTs = stringValue_(row[4]);
+    var sourceUrl = stringValue_(row[5]);
+    var targetChannelId = stringValue_(row[8]);
+    var postedTs = stringValue_(row[9]);
+
+    if (dryRun || !ruleName || !sourceChannelId || !sourceMessageTs || !targetChannelId || !postedTs) {
+      stats.skipped_count += 1;
+      continue;
+    }
+
+    stats.considered_count += 1;
+    try {
+      var rule = rulesByName[ruleName] || {
+        ruleName: ruleName,
+        sourceChannelName: sourceChannelName || sourceChannelId,
+        reactionName: normalizeReactionName_(row[6]),
+        targetChannelName: stringValue_(row[7]) || targetChannelId,
+        postMode: normalizeReactionForwardPostMode_(row[11]),
+        includeSourceLink: parseBoolean_(row[12])
+      };
+      var message = getChannelMessageByTs_(sourceChannelId, sourceMessageTs);
+      if (!sourceUrl) {
+        sourceUrl = getPermalink(sourceChannelId, sourceMessageTs);
+      }
+      var postPayload = buildReactionForwardPostPayload_(message, rule, sourceUrl);
+      if (!postPayload.text) {
+        stats.empty_message_skipped_count += 1;
+        continue;
+      }
+      var updateResponse;
+      try {
+        updateResponse = updateReactionForwardPayload_(
+          targetChannelId,
+          postedTs,
+          postPayload,
+          'refreshReactionForwardPost:' + ruleName + ':' + postedTs
+        );
+        stats.updated_count += 1;
+      } catch (error) {
+        if (!isSlackMessageNotFoundError_(error)) {
+          throw error;
+        }
+        saveError('refreshReactionForwardPost:repost_missing_target:' + ruleName + ':' + postedTs, error);
+        updateResponse = postReactionForwardPayload_(
+          targetChannelId,
+          postPayload,
+          'refreshReactionForwardPost:repost_missing_target:' + ruleName + ':' + sourceMessageTs
+        );
+        postedTs = updateResponse.ts || postedTs;
+        sheet.getRange(i + 1, 10).setNumberFormat('@');
+        sheet.getRange(i + 1, 10).setValue(postedTs);
+        stats.reposted_count += 1;
+      }
+      sheet.getRange(i + 1, 6).setNumberFormat('@');
+      sheet.getRange(i + 1, 6).setValue(sourceUrl);
+      sheet.getRange(i + 1, 11).setNumberFormat('@');
+      sheet.getRange(i + 1, 11).setValue(postPayload.text);
+      if (updateResponse.reaction_forward_used_blocks) {
+        stats.blocks_used_count += 1;
+      }
+      if (updateResponse.reaction_forward_blocks_fallback) {
+        stats.blocks_fallback_count += 1;
+      }
+    } catch (error) {
+      stats.error_count += 1;
+      stats.last_error = error && error.message ? error.message : String(error);
+      saveError('refreshReactionForwardPost:' + ruleName + ':' + postedTs, error);
+    }
+  }
+
+  return stats;
 }
 
 function isAlreadyLinked(targetChannelId, targetThreadTs, sourceUrl, targetUrl) {
@@ -2885,6 +3173,37 @@ function testReactionForwarding_() {
     ]
   }, rules[0], '');
   assertTest_(blockText.text === '記事タイトル\n\n*要約本文*\n\n補足', 'reaction forward blocks must become copy text');
+
+  var blockPayload = buildReactionForwardPostPayload_({
+    text: '',
+    blocks: [
+      {type: 'header', block_id: 'old-header', text: {type: 'plain_text', text: '記事タイトル'}},
+      {
+        type: 'section',
+        block_id: 'old-section',
+        text: {type: 'mrkdwn', text: '*要約本文*'},
+        accessory: {type: 'button', action_id: 'open', text: {type: 'plain_text', text: '開く'}}
+      },
+      {type: 'actions', elements: [{type: 'button', action_id: 'skip', text: {type: 'plain_text', text: '不要'}}]}
+    ]
+  }, rules[0], '');
+  assertTest_(blockPayload.blocks.length === 2, 'reaction forward payload must keep text blocks only');
+  assertTest_(blockPayload.blocks[0].block_id === undefined, 'reaction forward payload must remove block_id');
+  assertTest_(!blockPayload.blocks[1].accessory, 'reaction forward payload must remove non-image accessories');
+
+  var linkRule = {
+    ruleName: rules[0].ruleName,
+    sourceChannelName: rules[0].sourceChannelName,
+    reactionName: rules[0].reactionName,
+    targetChannelName: rules[0].targetChannelName,
+    postMode: rules[0].postMode,
+    includeSourceLink: true
+  };
+  var linkPayload = buildReactionForwardPostPayload_({
+    text: '',
+    blocks: [{type: 'section', text: {type: 'mrkdwn', text: '本文'}}]
+  }, linkRule, 'https://slack.test/archives/C/p1000000000000000');
+  assertTest_(linkPayload.blocks.length === 2, 'reaction forward payload must append source link block when requested');
 
   var richText = buildReactionForwardPostText_({
     text: '',

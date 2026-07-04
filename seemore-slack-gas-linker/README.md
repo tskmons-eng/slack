@@ -54,7 +54,7 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 
 ## アシスタント記事スタンプ転送
 
-`reaction_forward_rules` シートに有効なルールを追加すると、指定チャンネルの投稿に指定リアクションが付いた時、指定した転送先チャンネルへ本文だけをコピー投稿します。元チャンネルを開けないメンバー向けの共有を想定しているため、初期テンプレートは `include_source_link=false` です。
+`reaction_forward_rules` シートに有効なルールを追加すると、指定チャンネルの投稿に指定リアクションが付いた時、指定した転送先チャンネルへ本文をコピー投稿します。元投稿にSlack blocksがある場合は、見出し、太字、リンク、箇条書きなどの装飾も可能な範囲で保持します。元チャンネルを開けないメンバー向けの共有を想定しているため、初期テンプレートは `include_source_link=false` です。
 
 `setup()` 後に `reaction_forward_rules` へ以下のように入力します。
 
@@ -76,7 +76,7 @@ Slack標準絵文字の `:curly_loop:` は画面上で輪っかのように見�
 
 受信したリアクションイベントは `slack_reaction_events` シートに記録します。記録するのはスタンプ名、対象チャンネル、対象メッセージTS、マッチしたルール数、処理理由、投稿数などの診断情報だけで、投稿本文やトークンは保存しません。
 
-投稿本文は `message.text` を優先し、本文が空の場合はSlack blocksから見出し、section、context、rich_textの文字を抽出します。添付ファイルの再アップロードはv1範囲外です。
+投稿本文は `message.text` を通知・検索用のフォールバックとして保持し、Slack blocksがある場合は再投稿用にコピーします。コピー対象は `section`、`header`、`context`、`divider`、`rich_text`、`image` で、ボタンや入力欄などのインタラクティブ部品は転送しません。Slackがblocksを拒否した場合はエラーを記録し、本文だけの投稿にフォールバックします。添付ファイルの再アップロードはv1範囲外です。
 
 ユーザー様側で必要な作業:
 
@@ -271,6 +271,8 @@ Apps Script上で以下を実行できます。
   - `reaction_forward_rules` の有効ルールについて、直近30日・最大100投稿から転送候補を確認します。Slackへは投稿しません。
 - `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD`
   - `reaction_forward_rules` の有効ルールについて、候補を実際に転送します。手動実行用で、確認トークンが必須です。
+- `?action=refresh_reaction_forward_posts&confirm=RUN_REACTION_FORWARD&limit=1`
+  - `reaction_forward_posts` の直近転送済み投稿を元投稿から読み直し、転送先の既存投稿を更新します。blocks保持の修正を既に転送済みの投稿へ反映する時に使います。転送先投稿が削除済みで `message_not_found` になる場合は、同じ転送先へ再投稿して履歴シートの `posted_ts` を差し替えます。
 - `?action=channel_reactions&limit=15`
   - `アシスタント` の直近投稿と返信に付いているSlack API上のリアクション名を確認します。投稿本文は短いプレビューだけ返します。
 
