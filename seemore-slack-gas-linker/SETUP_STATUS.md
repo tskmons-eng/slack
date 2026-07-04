@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-04 16:14 JST
+Last updated: 2026-07-04 18:05 JST
 
 ## Completed
 
@@ -189,6 +189,13 @@ Last updated: 2026-07-04 16:14 JST
 - Added admin-protected `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD` for manual production execution of generic reaction forwarding.
 - Manual `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD` posted one copied assistant summary to `電話対応`: `posted_count=1`, `posted_ts=1783149157.319239`, `error_count=0`.
 - Web `?action=diagnostics` confirmed `reaction_forward_posts` contains the production row with `reaction_name=curly_loop`, target channel `電話対応`, and `dry_run=false`.
+
+## 2026-07-04 Slack Events Re-enabled
+
+- Chrome verification of Slack App `A0B9TSCGZAR` showed Event Subscriptions `Enable Events` was `Off`, while the Request URL matched the current GAS Events URL and was `Verified`.
+- Re-enabled Event Subscriptions from the Slack API UI and saved the app configuration.
+- Post-save verification showed `Enable Events=On`, Request URL still `Verified`, Delayed Events `On`, and Bot Event `reaction_added` present with required scope `reactions:read`.
+- This fixes the immediate `reaction_added` delivery path. The one-hour backup scan remains enabled as a fallback.
 
 ## Apps Script
 
