@@ -2383,9 +2383,15 @@ function normalizeReactionForwardPostMode_(value) {
 
 function buildReactionForwardPostPayload_(message, rule, sourceUrl) {
   var textResult = buildReactionForwardPostText_(message, rule, sourceUrl);
+  var blocks = buildReactionForwardPostBlocks_(message, rule, sourceUrl);
+  var toc = buildReactionForwardSummaryToc_(textResult.text);
+  if (toc.text) {
+    textResult.text = insertReactionForwardSummaryTocText_(textResult.text, toc.text);
+    blocks = insertReactionForwardSummaryTocBlocks_(blocks, toc.text);
+  }
   return {
     text: textResult.text,
-    blocks: buildReactionForwardPostBlocks_(message, rule, sourceUrl),
+    blocks: blocks,
     truncated: textResult.truncated
   };
 }
@@ -2421,6 +2427,204 @@ function buildReactionForwardPostBlocks_(message, rule, sourceUrl) {
     });
   }
   return blocks.slice(0, REACTION_FORWARD_MAX_BLOCK_COUNT);
+}
+
+function buildReactionForwardSummaryToc_(text) {
+  var headings = extractReactionForwardTocHeadings_(text);
+  if (headings.length < 2) {
+    return {
+      text: '',
+      headings: []
+    };
+  }
+  return {
+    text: '*目次*\n' + headings.map(function(heading, index) {
+      return (index + 1) + '. ' + heading;
+    }).join('\n'),
+    headings: headings
+  };
+}
+
+function extractReactionForwardTocHeadings_(text) {
+  var normalizedText = normalizeCopiedSlackText_(text);
+  if (!normalizedText || hasReactionForwardToc_(normalizedText)) {
+    return [];
+  }
+  var topLevelHeadings = extractReactionForwardTopLevelTocHeadings_(normalizedText);
+  if (topLevelHeadings.length >= 2 && topLevelHeadings.indexOf('要約') !== -1) {
+    return topLevelHeadings;
+  }
+  return extractReactionForwardSummarySubheadings_(normalizedText);
+}
+
+function extractReactionForwardTopLevelTocHeadings_(text) {
+  var headings = [];
+  text.split('\n').forEach(function(line) {
+    addReactionForwardTocHeading_(headings, extractReactionForwardSectionHeadingFromLine_(line));
+  });
+
+  var knownSectionPattern = /(要約|概要|結論|ポイント|背景|影響|論点|次の対応|対応|決定事項|アクション|TODO|タスク|補足)\s*[:：]/g;
+  var match;
+  while ((match = knownSectionPattern.exec(text)) !== null) {
+    addReactionForwardTocHeading_(headings, match[1]);
+  }
+  return headings.slice(0, 10);
+}
+
+function extractReactionForwardSummarySubheadings_(text) {
+  var lines = text.split('\n');
+  var summaryIndex = findReactionForwardSummaryLineIndex_(lines);
+  if (summaryIndex === -1) {
+    return [];
+  }
+
+  var headings = [];
+  for (var i = summaryIndex + 1; i < lines.length; i += 1) {
+    if (isReactionForwardSummaryEndLine_(lines[i])) {
+      break;
+    }
+    addReactionForwardTocHeading_(headings, extractReactionForwardSectionHeadingFromLine_(lines[i]));
+  }
+  return headings.slice(0, 10);
+}
+
+function addReactionForwardTocHeading_(headings, value) {
+  var heading = cleanReactionForwardTocHeading_(value);
+  if (!heading || headings.indexOf(heading) !== -1) {
+    return;
+  }
+  headings.push(heading);
+}
+
+function extractReactionForwardSectionHeadingFromLine_(line) {
+  var text = stringValue_(line).trim();
+  if (!text || hasReactionForwardToc_(text)) {
+    return '';
+  }
+
+  var match = text.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
+  if (match) {
+    return match[1];
+  }
+  match = text.match(/^\s*(?:\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*(?:\*{1,2}|__)(.+?)(?:\*{1,2}|__)\s*[:：]?\s*$/);
+  if (match) {
+    return match[1];
+  }
+  match = text.match(/^\s*(?:[-・]\s*)?(?:\*{1,2}|__)([^*_]{2,80})(?:\*{1,2}|__)\s*[:：]?\s*$/);
+  if (match) {
+    return match[1];
+  }
+  match = text.match(/^\s*(?:\d+[.)]\s*)?【([^】]{2,80})】\s*$/);
+  if (match) {
+    return match[1];
+  }
+  match = text.match(/^\s*(?:■|◆|◇|●)\s*(.{2,80})\s*$/);
+  if (match) {
+    return match[1];
+  }
+  match = text.match(/^\s*(?:\d+[.)]\s*)?(.{2,40})\s*[:：]\s*$/);
+  if (match) {
+    return match[1];
+  }
+  return '';
+}
+
+function cleanReactionForwardTocHeading_(value) {
+  var heading = stringValue_(value)
+    .replace(/<[^|>]+\|([^>]+)>/g, '$1')
+    .replace(/<([^>]+)>/g, '$1')
+    .replace(/^[#>\s]+/g, '')
+    .replace(/^\d+[.)]\s*/g, '')
+    .replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/g, '')
+    .replace(/^[・\-]\s*/g, '')
+    .replace(/^【(.+)】$/g, '$1')
+    .replace(/^(\*{1,2}|__)(.+)(\*{1,2}|__)$/g, '$2')
+    .replace(/\*/g, '')
+    .replace(/[:：]\s*$/g, '')
+    .trim();
+  if (!heading || heading.length < 2 || heading.length > 80) {
+    return '';
+  }
+  if (/https?:\/\/|www\./i.test(heading)) {
+    return '';
+  }
+  if (/[。！？!?]$/.test(heading) && heading.length > 30) {
+    return '';
+  }
+  if (!reactionForwardTocHeadingAllowed_(heading)) {
+    return '';
+  }
+  return heading;
+}
+
+function reactionForwardTocHeadingAllowed_(heading) {
+  return !/^(リンク|URL|出典|参考|参照|録音|録画|再生|添付|ソース|元投稿を開く)$/.test(heading);
+}
+
+function insertReactionForwardSummaryTocText_(text, tocText) {
+  if (!tocText || hasReactionForwardToc_(text)) {
+    return text;
+  }
+  var lines = stringValue_(text).split('\n');
+  var summaryIndex = findReactionForwardSummaryLineIndex_(lines);
+  var insertIndex = summaryIndex === -1 ? 0 : summaryIndex;
+  lines.splice(insertIndex, 0, tocText, '');
+  return normalizeCopiedSlackText_(lines.join('\n'));
+}
+
+function insertReactionForwardSummaryTocBlocks_(blocks, tocText) {
+  if (!tocText || !blocks || !blocks.length || hasReactionForwardToc_(extractSlackBlockText_(blocks))) {
+    return blocks || [];
+  }
+  var insertIndex = findReactionForwardSummaryBlockIndex_(blocks);
+  if (insertIndex === -1) {
+    insertIndex = 0;
+  }
+  var nextBlocks = blocks.slice();
+  nextBlocks.splice(insertIndex, 0, {
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: tocText
+    }
+  });
+  return nextBlocks.slice(0, REACTION_FORWARD_MAX_BLOCK_COUNT);
+}
+
+function findReactionForwardSummaryBlockIndex_(blocks) {
+  for (var i = 0; i < (blocks || []).length; i += 1) {
+    if (isReactionForwardSummaryText_(extractSlackBlockText_([blocks[i]]))) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function findReactionForwardSummaryLineIndex_(lines) {
+  for (var i = 0; i < (lines || []).length; i += 1) {
+    if (isReactionForwardSummaryText_(lines[i])) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function isReactionForwardSummaryText_(value) {
+  var text = cleanReactionForwardTocHeading_(value);
+  if (text === '要約' || text === '概要') {
+    return true;
+  }
+  return /(?:^|[\s）)])要約\s*[:：]/.test(stringValue_(value)) ||
+    /(?:^|[\s）)])概要\s*[:：]/.test(stringValue_(value));
+}
+
+function isReactionForwardSummaryEndLine_(line) {
+  var heading = cleanReactionForwardTocHeading_(extractReactionForwardSectionHeadingFromLine_(line));
+  return /^(次の対応|対応|決定事項|アクション|TODO|タスク|リンク|URL|出典|参考|参照|録音|録画|再生)$/.test(heading);
+}
+
+function hasReactionForwardToc_(text) {
+  return /(^|\n)\s*(?:\*{1,2})?目次(?:\*{1,2})?\s*[:：]?\s*(\n|$)/.test(stringValue_(text));
 }
 
 function sanitizeSlackBlocksForForward_(blocks) {
@@ -3204,6 +3408,23 @@ function testReactionForwarding_() {
     blocks: [{type: 'section', text: {type: 'mrkdwn', text: '本文'}}]
   }, linkRule, 'https://slack.test/archives/C/p1000000000000000');
   assertTest_(linkPayload.blocks.length === 2, 'reaction forward payload must append source link block when requested');
+
+  var sectionTocPayload = buildReactionForwardPostPayload_({
+    text: 'zoom要約(26秒): 要約: 内容です。\n\n次の対応: 確認する\n\nリンク: <https://example.test|録音を再生>'
+  }, rules[0], '');
+  assertTest_(sectionTocPayload.text.indexOf('*目次*\n1. 要約\n2. 次の対応') !== -1, 'reaction forward payload must add TOC from summary section labels');
+  assertTest_(sectionTocPayload.text.indexOf('3. リンク') === -1, 'reaction forward TOC must exclude link-only labels');
+
+  var articleTocPayload = buildReactionForwardPostPayload_({
+    text: '',
+    blocks: [
+      {type: 'header', text: {type: 'plain_text', text: '記事タイトル'}},
+      {type: 'section', text: {type: 'mrkdwn', text: '要約:\n### 背景\n本文\n### 影響\n本文'}}
+    ]
+  }, rules[0], '');
+  assertTest_(articleTocPayload.text.indexOf('2. 背景') !== -1, 'reaction forward payload must add TOC from article subheadings');
+  assertTest_(articleTocPayload.blocks.length === 3, 'reaction forward TOC must be inserted as a Slack block');
+  assertTest_(articleTocPayload.blocks[1].text.text.indexOf('*目次*') !== -1, 'reaction forward TOC block must be inserted before summary blocks');
 
   var richText = buildReactionForwardPostText_({
     text: '',

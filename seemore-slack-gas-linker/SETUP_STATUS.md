@@ -268,6 +268,8 @@ The manifest includes:
 - Reaction forwarding now builds Slack `text` plus sanitized Slack `blocks` for `copy_text` posts.
 - Supported copied block types: `section`, `header`, `context`, `divider`, `rich_text`, and `image`.
 - Non-text interactive parts such as buttons and inputs are not copied into forwarded article posts.
+- When a forwarded summary includes a `要約` section and at least two headings or section labels such as `次の対応`, the forwarder inserts a `目次` block in the target post.
+- Link-only labels such as `リンク` are excluded from the generated `目次`.
 - If Slack rejects copied blocks, the script records an error and falls back to a text-only post so forwarding does not stop.
 - Added `?action=refresh_reaction_forward_posts&confirm=RUN_REACTION_FORWARD&limit=1` to update the most recent forwarded article post in place from the original source message.
 - If the existing target message has been deleted and Slack returns `message_not_found`, the refresh action reposts the formatted message and replaces the stored `posted_ts`.
@@ -276,3 +278,6 @@ The manifest includes:
   - First refresh found the latest stored target message missing and reposted it with blocks: `reposted_count=1`, `blocks_used_count=1`, `blocks_fallback_count=0`.
   - `電話対応` then showed the new forwarded post at `1783172263.804869`.
   - Second refresh updated that stored post in place: `updated_count=1`, `reposted_count=0`, `blocks_used_count=1`.
+- Deployed GAS version 55 to add summary TOC generation.
+- Refreshed the latest `電話対応` forwarded post again after version 55: `updated_count=1`, `blocks_used_count=1`, `blocks_fallback_count=0`.
+- `電話対応` preview confirmed the forwarded post now starts with `*目次* 1. 要約 2. 次の対応`.
