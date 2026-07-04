@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-06-14 02:27 JST
+Last updated: 2026-07-04 11:12 JST
 
 ## Completed
 
@@ -142,12 +142,27 @@ Last updated: 2026-06-14 02:27 JST
 - Slack Bot Events includes `reaction_added` with required scope `reactions:read`.
 - Slack Delayed Events is `On`, so Slack will retry missed event deliveries over 24 hours.
 
+## 2026-07-04 Version 46 Assistant Article Reaction Forwarding
+
+- Added generic reaction forwarding alongside the existing invoice rocket forwarding.
+- New `reaction_forward_rules` sheet controls source channel, reaction name, target channel, `copy_text` mode, and whether to include the source link.
+- New `reaction_forward_posts` sheet records forwarded source message, reaction, target channel, posted timestamp, and copied text to prevent duplicates.
+- `reaction_added` now evaluates generic forwarding rules before/alongside invoice forwarding, so non-rocket assistant article stamps no longer get ignored.
+- `scheduledMain()` now also runs a backup generic reaction-forwarding scan over enabled rules.
+- Added public `runReactionForwardDryRunNow()` and Web `?action=reaction_forward_dryrun` for no-post candidate checks.
+- Rich text inline elements are preserved inline when copying Slack block text.
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger mocked and now includes rule parsing, text extraction, and duplicate-row checks for reaction forwarding.
+- `clasp push` succeeded, versions 44 through 46 were created during implementation, and both the setup web deployment and API executable deployment were updated to version 46.
+- Web `?action=status` confirmed `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers, `scheduled_trigger_count=1`, `reaction_forward_rule_count=1`, and `reaction_forward_enabled_rule_count=0`.
+- The initial `assistant_articles` rule is intentionally disabled until the user-created stamp and target channel are filled in and `enabled=true` is set.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 42
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 42
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 46
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 46
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -158,6 +173,8 @@ Last updated: 2026-06-14 02:27 JST
 - Spreadsheet exists: `1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s`
 - Spreadsheet URL: `https://docs.google.com/spreadsheets/d/1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s/edit`
 - Required sheets exist with valid headers.
+- `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers.
+- `reaction_forward_rules` contains one disabled `assistant_articles` template rule.
 - `DRY_RUN=true` for scheduled `main()` runs. The verified real Slack post was executed through the targeted `link_threads` action with `dry_run=false`.
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.

@@ -52,6 +52,34 @@ Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレ
 
 スタンプが押された瞬間に転送するにはSlack Events APIの `reaction_added` イベントをGASの `doPost` で受ける構成が必要です。WebアプリはSlackから到達できるよう `ANYONE_ANONYMOUS` で公開しますが、管理系のGET/POST操作は `WEB_ADMIN_TOKEN` がないと動きません。Slack EventsのRequest URLには `SLACK_EVENT_REQUEST_TOKEN` を `slack_event_token` パラメータとして付けます。通常のポーリング方式も併用されます。
 
+## アシスタント記事スタンプ転送
+
+`reaction_forward_rules` シートに有効なルールを追加すると、指定チャンネルの投稿に指定リアクションが付いた時、指定した転送先チャンネルへ本文だけをコピー投稿します。元チャンネルを開けないメンバー向けの共有を想定しているため、初期テンプレートは `include_source_link=false` です。
+
+`setup()` 後に `reaction_forward_rules` へ以下のように入力します。
+
+```text
+enabled: true
+rule_name: assistant_articles
+source_channel_name: アシスタント
+reaction_name: ユーザー様が作るスタンプ名
+target_channel_name: ユーザー様が作る転送先チャンネル名
+post_mode: copy_text
+include_source_link: false
+```
+
+転送済みは `reaction_forward_posts` シートに保存し、同じルール、同じ元投稿、同じリアクション、同じ転送先では再投稿しません。Slack Events APIの再送や1時間ごとのバックアップ確認が重なっても、投稿直前から履歴保存までScript Lockで直列化して二重投稿を防ぎます。
+
+投稿本文は `message.text` を優先し、本文が空の場合はSlack blocksから見出し、section、context、rich_textの文字を抽出します。添付ファイルの再アップロードはv1範囲外です。
+
+ユーザー様側で必要な作業:
+
+- Slackで転送先チャンネルを作る。
+- 使うカスタムスタンプを作る。
+- 既存Botを `アシスタント` チャンネルと転送先チャンネルの両方に招待する。
+- デプロイ後、`reaction_forward_rules` のテンプレート行にスタンプ名と転送先チャンネル名を入れ、`enabled=true` にする。
+- `?action=reaction_forward_dryrun` で候補数を確認する。Slackへは投稿しません。
+
 2026-06-14時点の運用想定:
 
 - 請求書ロケット監視元は約6チャンネルで、実運用上は絞り込みにくい。
@@ -132,6 +160,7 @@ Slackの各対象チャンネルで以下を実行します。
 - `依頼＿ALL`
 - `依頼＿請求書`
 - その他、請求書ロケット監視元にしたいチャンネル
+- アシスタント記事転送を使う場合は `アシスタント` と転送先チャンネル
 
 ## Google Apps Script作成
 
@@ -158,9 +187,10 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 `setup()` は以下を自動で行います。
 
 - スプレッドシート `SEEMORE_Slack車案件リンク管理` の作成
-- `settings`、`linked_threads`、`run_logs`、`errors`、`dry_run_logs`、`invoice_reaction_posts` シートの作成
+- `settings`、`linked_threads`、`run_logs`、`errors`、`dry_run_logs`、`invoice_reaction_posts`、`reaction_forward_rules`、`reaction_forward_posts` シートの作成
 - ヘッダー行の作成
 - `settings` 初期値の作成
+- `reaction_forward_rules` に無効状態の `assistant_articles` テンプレート行を作成
 - 1時間ごとに `scheduledMain()` を実行するトリガーの作成
 
 ## settingsシート
@@ -205,9 +235,10 @@ Apps Script上で以下を実行できます。
 | `testSlackAuth()` | Slack API認証が通るか確認します。 |
 | `testFindChannels()` | 対象3チャンネルのIDが取得できるか確認します。 |
 | `listJoinedChannelsForInvoice_()` | Botが参加しているチャンネルと、請求書ロケット監視候補を確認します。 |
+| `runReactionForwardDryRunNow()` | アシスタント記事などの汎用スタンプ転送候補を、投稿せず確認します。 |
 | `testDryRunOnce()` | `DRY_RUN=true` 相当で1回処理し、投稿予定を `dry_run_logs` に保存します。 |
 
-`clasp run` が環境都合で使えない場合は、WebアプリURLの `?action=test_slack`、`?action=test_logic`、`?action=dryrun` で同じ確認を実行できます。検証時間を抑える場合は `?action=dryrun&lookback_days=7&max_threads_per_channel=5` を使います。
+`clasp run` が環境都合で使えない場合は、WebアプリURLの `?action=test_slack`、`?action=test_logic`、`?action=dryrun`、`?action=reaction_forward_dryrun` で同じ確認を実行できます。検証時間を抑える場合は `?action=dryrun&lookback_days=7&max_threads_per_channel=5` を使います。
 
 ## Web診断アクション
 
@@ -227,6 +258,8 @@ Apps Script上で以下を実行できます。
   - 請求書ロケット監視元の直近投稿から、ロケットリアクション付きの転送候補を確認します。PDFがない候補はリンクのみとして扱います。Slackへは投稿しません。
 - `?action=invoice_run&confirm=RUN_INVOICE_FORWARD`
   - 請求書転送を手動で本番実行します。
+- `?action=reaction_forward_dryrun`
+  - `reaction_forward_rules` の有効ルールについて、直近30日・最大100投稿から転送候補を確認します。Slackへは投稿しません。
 
 ## 請求書ロケット転送の漏れ対策
 
@@ -381,6 +414,37 @@ last_error
 dry_run
 ```
 
+`reaction_forward_rules`:
+
+```text
+enabled
+rule_name
+source_channel_name
+reaction_name
+target_channel_name
+post_mode
+include_source_link
+```
+
+`reaction_forward_posts`:
+
+```text
+processed_at
+rule_name
+source_channel_name
+source_channel_id
+source_message_ts
+source_url
+reaction_name
+target_channel_name
+target_channel_id
+posted_ts
+posted_text
+post_mode
+include_source_link
+dry_run
+```
+
 ## 投稿文
 
 大親へ貼る場合:
@@ -413,6 +477,12 @@ PDFファイルがない場合:
 <元投稿を開く>
 ```
 
+アシスタント記事転送の場合:
+
+```text
+元投稿の本文を整えたコピー
+```
+
 ## 安全ルール
 
 以下の場合は投稿しません。
@@ -426,6 +496,9 @@ PDFファイルがない場合:
 - 対象チャンネル以外のスレッド
 - 同じURLが既に投稿先スレッドにある
 - `linked_threads` に同じ組み合わせがある
+- Botが `reaction_forward_rules` の元チャンネルまたは転送先チャンネルに参加していない
+- `reaction_forward_posts` に同じ元投稿、同じスタンプ、同じ転送先の記録がある
+- アシスタント記事転送でコピーできる本文がない
 - `DRY_RUN=true`
 
 ## トリガー確認

@@ -30,6 +30,10 @@
 - 請求書ロケット転送はSlack Events APIの再送や1時間クロールとの同時実行でも、同一元投稿を二重投稿しないことを優先する。投稿処理はScript Lockで直列化し、ロック内で転送済みと投稿先チャンネル内の同じ元URLを再確認する。
 - GAS/Slack制限対策として、GAS実行時間に近づく前に途中停止し、未確認チャンネルを次回優先する。Slack API 429時は `Retry-After` に従って短く待って再試行する。
 - Slack Events API用にGAS Webアプリを公開する場合でも、管理系アクションは `WEB_ADMIN_TOKEN` 必須にし、Slackイベントは `SLACK_EVENT_REQUEST_TOKEN` 付きRequest URLだけ受け付ける。
+- アシスタント記事転送は、既存の請求書ロケット転送を置き換えず `reaction_forward_rules` / `reaction_forward_posts` で別管理する。
+- `アシスタント` チャンネルを開けない転送先メンバー向けなので、初期運用は元投稿リンクではなく本文コピーを優先し、`include_source_link=false` を基本にする。
+- アシスタント記事転送もSlack Events APIの `reaction_added` で即時処理し、1時間ごとの `scheduledMain()` では直近30日・最大100投稿をバックアップ確認する。
+- 同じ元投稿、同じスタンプ、同じ転送先への再投稿は `reaction_forward_posts` とScript Lockで防ぐ。
 
 ## Gmail 転送
 
