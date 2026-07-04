@@ -72,6 +72,8 @@ include_source_link: false
 
 転送済みは `reaction_forward_posts` シートに保存し、同じルール、同じ元投稿、同じリアクション、同じ転送先では再投稿しません。Slack Events APIの再送や1時間ごとのバックアップ確認が重なっても、投稿直前から履歴保存までScript Lockで直列化して二重投稿を防ぎます。
 
+受信したリアクションイベントは `slack_reaction_events` シートに記録します。記録するのはスタンプ名、対象チャンネル、対象メッセージTS、マッチしたルール数、処理理由、投稿数などの診断情報だけで、投稿本文やトークンは保存しません。
+
 投稿本文は `message.text` を優先し、本文が空の場合はSlack blocksから見出し、section、context、rich_textの文字を抽出します。添付ファイルの再アップロードはv1範囲外です。
 
 ユーザー様側で必要な作業:
@@ -251,6 +253,8 @@ Apps Script上で以下を実行できます。
   - 指定ロールのチャンネルを走査し、`車体番号:` / `車台番号:` / `スレID:` ラベルを含むスレッド数と候補を確認します。
 - `?action=joined_channels`
   - Botが参加しているチャンネル一覧と、現在の請求書ロケット監視候補を確認します。
+- `?action=diagnostics`
+  - Slack認証、参加チャンネル、請求書設定、アシスタント転送ルール、直近エラー、直近リアクションイベントを確認します。トークンや投稿本文は返しません。
 - `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
   - `channel_name` を指定すると、対象チャンネルだけを診断します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
@@ -446,6 +450,28 @@ posted_text
 post_mode
 include_source_link
 dry_run
+```
+
+`slack_reaction_events`:
+
+```text
+received_at
+event_type
+reaction_name
+item_type
+source_channel_id
+source_channel_name
+source_message_ts
+matching_rule_count
+should_check_invoice
+invoice_source_allowed
+reason
+candidates_found
+posted_count
+planned_count
+duplicate_skipped_count
+error_count
+last_error
 ```
 
 ## 投稿文

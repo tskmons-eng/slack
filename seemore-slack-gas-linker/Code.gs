@@ -138,6 +138,25 @@ var SHEET_HEADERS = {
     'post_mode',
     'include_source_link',
     'dry_run'
+  ],
+  slack_reaction_events: [
+    'received_at',
+    'event_type',
+    'reaction_name',
+    'item_type',
+    'source_channel_id',
+    'source_channel_name',
+    'source_message_ts',
+    'matching_rule_count',
+    'should_check_invoice',
+    'invoice_source_allowed',
+    'reason',
+    'candidates_found',
+    'posted_count',
+    'planned_count',
+    'duplicate_skipped_count',
+    'error_count',
+    'last_error'
   ]
 };
 
@@ -187,6 +206,12 @@ function doGet(event) {
   if (action === 'joined_channels') {
     return runHtmlJsonAction_(function() {
       return listJoinedChannelsForInvoice_();
+    });
+  }
+
+  if (action === 'diagnostics') {
+    return runHtmlJsonAction_(function() {
+      return getOperationalDiagnostics_();
     });
   }
 
@@ -465,6 +490,13 @@ function processSlackReactionEvent_(event, settings) {
     reason: '',
     event_type: event.type || '',
     reaction_name: reactionName,
+    item_type: '',
+    source_channel_id: '',
+    source_channel_name: '',
+    source_message_ts: '',
+    matching_rule_count: 0,
+    should_check_invoice: false,
+    invoice_source_allowed: false,
     candidates_found: 0,
     posted_count: 0,
     planned_count: 0,
@@ -480,14 +512,17 @@ function processSlackReactionEvent_(event, settings) {
   if (event.type !== 'reaction_added') {
     stats.ignored = true;
     stats.reason = 'not_reaction_added';
-    return stats;
+    return finishSlackReactionEvent_(stats);
   }
 
   var item = event.item || {};
+  stats.item_type = item.type || '';
+  stats.source_channel_id = item.channel || '';
+  stats.source_message_ts = item.ts || '';
   if (item.type !== 'message' || !item.channel || !item.ts) {
     stats.ignored = true;
     stats.reason = 'unsupported_item';
-    return stats;
+    return finishSlackReactionEvent_(stats);
   }
 
   var sourceChannel = getChannelById_(item.channel) || {
@@ -496,20 +531,24 @@ function processSlackReactionEvent_(event, settings) {
     is_private: false,
     is_member: true
   };
+  stats.source_channel_name = sourceChannel.name || '';
 
   var matchingReactionRules = findMatchingReactionForwardRules_(reactionName, sourceChannel);
   var shouldCheckInvoice = reactionName === settings.invoiceReactionName && settings.invoiceForwardEnabled;
+  stats.matching_rule_count = matchingReactionRules.length;
+  stats.should_check_invoice = shouldCheckInvoice;
   var invoiceTargetChannel = null;
   var invoiceSourceAllowed = false;
   if (shouldCheckInvoice) {
     invoiceTargetChannel = getChannelByName_(settings.invoiceTargetChannelName);
     invoiceSourceAllowed = isInvoiceSourceChannelAllowed_(settings, sourceChannel, invoiceTargetChannel);
   }
+  stats.invoice_source_allowed = invoiceSourceAllowed;
 
   if (!matchingReactionRules.length && (!shouldCheckInvoice || !invoiceSourceAllowed)) {
     stats.ignored = true;
     stats.reason = shouldCheckInvoice ? 'source_channel_not_monitored' : 'no_matching_reaction_rule';
-    return stats;
+    return finishSlackReactionEvent_(stats);
   }
 
   var message = getMessageFromReactionEvent_(item, reactionName);
@@ -532,6 +571,11 @@ function processSlackReactionEvent_(event, settings) {
     stats.ignored = true;
     stats.reason = 'no_matching_candidate';
   }
+  return finishSlackReactionEvent_(stats);
+}
+
+function finishSlackReactionEvent_(stats) {
+  saveSlackReactionEventLog_(stats);
   return stats;
 }
 
@@ -767,6 +811,93 @@ function getSetupStatus_() {
     : 'daily_hours';
 
   return status;
+}
+
+function getOperationalDiagnostics_() {
+  var status = getSetupStatus_();
+  var joined = listJoinedChannelsForInvoice_();
+  var targetChannelNames = [
+    'アシスタント',
+    '電話対応',
+    status.settings.invoice_target_channel_name,
+    '依頼_請求書',
+    '依頼＿請求書'
+  ].filter(function(name, index, names) {
+    return name && names.indexOf(name) === index;
+  });
+  var channels = joined.channels || [];
+  var pickedChannels = channels.filter(function(channel) {
+    return targetChannelNames.some(function(name) {
+      return channelNameMatches_(channel, name);
+    });
+  });
+
+  return {
+    checked_at: nowIso_(),
+    status: {
+      spreadsheet_found: status.spreadsheet_found,
+      scheduled_trigger_count: status.scheduled_trigger_count,
+      scheduled_trigger_mode: status.scheduled_trigger_mode,
+      invoice_forward_enabled: status.settings.invoice_forward_enabled,
+      invoice_forward_dry_run: status.settings.invoice_forward_dry_run,
+      invoice_source_channel_names: status.settings.invoice_source_channel_names,
+      invoice_target_channel_name: status.settings.invoice_target_channel_name,
+      invoice_reaction_name: status.settings.invoice_reaction_name,
+      reaction_forward_rule_count: status.reaction_forward_rule_count,
+      reaction_forward_enabled_rule_count: status.reaction_forward_enabled_rule_count
+    },
+    joined_channel_count: joined.joined_count,
+    invoice_source_count: joined.invoice_source_count,
+    picked_channels: pickedChannels.map(function(channel) {
+      return {
+        name: channel.name,
+        id: channel.id,
+        is_private: Boolean(channel.is_private),
+        is_member: Boolean(channel.is_member)
+      };
+    }),
+    reaction_forward_rules: readReactionForwardRules_().map(function(rule) {
+      return {
+        enabled: rule.enabled,
+        rule_name: rule.ruleName,
+        source_channel_name: rule.sourceChannelName,
+        reaction_name: rule.reactionName,
+        target_channel_name: rule.targetChannelName,
+        post_mode: rule.postMode,
+        include_source_link: rule.includeSourceLink
+      };
+    }),
+    recent_reaction_events: readRecentSheetObjects_('slack_reaction_events', 20),
+    recent_errors: readRecentSheetObjects_('errors', 10),
+    recent_reaction_forward_posts: readRecentSheetObjects_('reaction_forward_posts', 10),
+    invoice_channel_scan_state: readSheetObjects_('invoice_channel_scan_state').slice(-20)
+  };
+}
+
+function readRecentSheetObjects_(sheetName, limit) {
+  var rows = readSheetObjects_(sheetName);
+  return rows.slice(Math.max(0, rows.length - limit));
+}
+
+function readSheetObjects_(sheetName) {
+  var spreadsheet = createSheets();
+  var sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return [];
+  }
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(header) {
+    return stringValue_(header);
+  });
+  var values = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  return values.map(function(row) {
+    var record = {};
+    headers.forEach(function(header, index) {
+      if (header) {
+        record[header] = row[index];
+      }
+    });
+    return record;
+  });
 }
 
 function renderSlackSettingsPage_(result, adminToken) {
@@ -2291,6 +2422,33 @@ function saveError(context, error) {
   var message = error && error.message ? error.message : String(error);
   var raw = error && error.rawResponse ? error.rawResponse : '';
   sheet.appendRow([nowIso_(), context || '', message, raw]);
+}
+
+function saveSlackReactionEventLog_(stats) {
+  try {
+    var sheet = createSheets().getSheetByName('slack_reaction_events');
+    sheet.appendRow([
+      nowIso_(),
+      stats.event_type || '',
+      stats.reaction_name || '',
+      stats.item_type || '',
+      stats.source_channel_id || '',
+      stats.source_channel_name || '',
+      stats.source_message_ts || '',
+      stats.matching_rule_count || 0,
+      String(Boolean(stats.should_check_invoice)),
+      String(Boolean(stats.invoice_source_allowed)),
+      stats.reason || '',
+      stats.candidates_found || 0,
+      stats.posted_count || 0,
+      stats.planned_count || 0,
+      stats.duplicate_skipped_count || 0,
+      stats.error_count || 0,
+      stats.last_error || ''
+    ]);
+  } catch (error) {
+    Logger.log('slack_reaction_eventsへの保存に失敗: ' + (error && error.message ? error.message : error));
+  }
 }
 
 function saveDryRunLog(record) {

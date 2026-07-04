@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-04 14:39 JST
+Last updated: 2026-07-04 15:54 JST
 
 ## Completed
 
@@ -169,12 +169,23 @@ Last updated: 2026-07-04 14:39 JST
 - Web `?action=reaction_forward_dryrun` completed with `ok=true`, `messages_checked=43`, `candidates_found=0`, `planned_count=0`, `posted_count=0`, and `error_count=0`.
 - `candidates_found=0` is expected when `:輪っか:` was posted as a standalone message. The transfer starts when `輪っか` is added as a reaction to the specific assistant summary post.
 
+## 2026-07-04 Version 48 Reaction Forwarding Diagnostics
+
+- Added `slack_reaction_events` sheet to record each received Slack reaction event's stamp name, source channel, message TS, matched rule count, invoice routing flags, result reason, and posting counters. It does not store message bodies or tokens.
+- Added admin-protected Web action `?action=diagnostics` to return setup status, Bot-joined key channels, reaction forwarding rules, recent reaction events, recent errors, recent reaction-forward posts, and invoice scan state.
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger/Utilities/Session mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
+- `clasp push` succeeded, version 48 was created, and both the setup web deployment and API executable deployment were updated to version 48.
+- Web `?action=diagnostics` returned `ok=true`, `scheduled_trigger_count=1`, `invoice_forward_enabled=true`, `reaction_forward_enabled_rule_count=1`, and confirmed Bot membership in `アシスタント`, `電話対応`, and `依頼_請求書`.
+- `recent_reaction_events` was empty immediately after deployment because the failed `輪っか` attempt happened before event logging existed and the user removed the reaction.
+- A broad `?action=invoice_dryrun` can take too long with `INVOICE_SOURCE_CHANNEL_NAMES=*` now that the Bot is in more channels. Use `?action=diagnostics` for quick health checks and reserve invoice dry runs for targeted investigation.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 47
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 47
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 48
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 48
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
