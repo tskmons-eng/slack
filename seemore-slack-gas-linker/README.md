@@ -68,6 +68,8 @@ post_mode: copy_text
 include_source_link: false
 ```
 
+管理URLから同じルールを更新する場合は、WebアプリURLに `action=set_reaction_forward_rule`、`confirm=UPDATE_REACTION_FORWARD_RULE`、`rule_name`、`source_channel_name`、`reaction_name`、`target_channel_name` を付けます。`reaction_name` は `輪っか` のようにコロンなしで保存されますが、`:輪っか:` の形で渡しても正規化します。
+
 転送済みは `reaction_forward_posts` シートに保存し、同じルール、同じ元投稿、同じリアクション、同じ転送先では再投稿しません。Slack Events APIの再送や1時間ごとのバックアップ確認が重なっても、投稿直前から履歴保存までScript Lockで直列化して二重投稿を防ぎます。
 
 投稿本文は `message.text` を優先し、本文が空の場合はSlack blocksから見出し、section、context、rich_textの文字を抽出します。添付ファイルの再アップロードはv1範囲外です。
@@ -78,6 +80,7 @@ include_source_link: false
 - 使うカスタムスタンプを作る。
 - 既存Botを `アシスタント` チャンネルと転送先チャンネルの両方に招待する。
 - デプロイ後、`reaction_forward_rules` のテンプレート行にスタンプ名と転送先チャンネル名を入れ、`enabled=true` にする。
+- 転送したい要約記事投稿に対象スタンプをリアクションとして押す。スタンプだけを単独投稿しても転送は起動しません。
 - `?action=reaction_forward_dryrun` で候補数を確認する。Slackへは投稿しません。
 
 2026-06-14時点の運用想定:

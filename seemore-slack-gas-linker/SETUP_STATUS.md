@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-04 11:12 JST
+Last updated: 2026-07-04 14:39 JST
 
 ## Completed
 
@@ -157,12 +157,24 @@ Last updated: 2026-07-04 11:12 JST
 - Web `?action=status` confirmed `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers, `scheduled_trigger_count=1`, `reaction_forward_rule_count=1`, and `reaction_forward_enabled_rule_count=0`.
 - The initial `assistant_articles` rule is intentionally disabled until the user-created stamp and target channel are filled in and `enabled=true` is set.
 
+## 2026-07-04 Version 47 Reaction Forward Rule Admin Action
+
+- Added admin-protected Web action `?action=set_reaction_forward_rule&confirm=UPDATE_REACTION_FORWARD_RULE` to update one `reaction_forward_rules` row without directly editing the sheet.
+- `reaction_name` is normalized the same way as runtime matching, so both `輪っか` and `:輪っか:` are stored as `輪っか`.
+- Local static syntax check passed through Node UTF-8 parsing.
+- Local synthetic `testResolveVinGroups()` passed with Logger/Utilities/Session mocked: `ok=true`, `actions=4`, `thread_id_actions=1`.
+- `clasp push` succeeded, version 47 was created, and both the setup web deployment and API executable deployment were updated to version 47.
+- The production `assistant_articles` rule was updated to `enabled=true`, `source_channel_name=アシスタント`, `reaction_name=輪っか`, `target_channel_name=電話対応`, `post_mode=copy_text`, and `include_source_link=false`.
+- Web `?action=status` confirmed `reaction_forward_rule_count=1` and `reaction_forward_enabled_rule_count=1`.
+- Web `?action=reaction_forward_dryrun` completed with `ok=true`, `messages_checked=43`, `candidates_found=0`, `planned_count=0`, `posted_count=0`, and `error_count=0`.
+- `candidates_found=0` is expected when `:輪っか:` was posted as a standalone message. The transfer starts when `輪っか` is added as a reaction to the specific assistant summary post.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 46
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 46
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 47
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 47
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -174,7 +186,7 @@ Last updated: 2026-07-04 11:12 JST
 - Spreadsheet URL: `https://docs.google.com/spreadsheets/d/1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s/edit`
 - Required sheets exist with valid headers.
 - `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers.
-- `reaction_forward_rules` contains one disabled `assistant_articles` template rule.
+- `reaction_forward_rules` contains one enabled `assistant_articles` rule: `アシスタント` + `輪っか` -> `電話対応`, `copy_text`, `include_source_link=false`.
 - `DRY_RUN=true` for scheduled `main()` runs. The verified real Slack post was executed through the targeted `link_threads` action with `dry_run=false`.
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.

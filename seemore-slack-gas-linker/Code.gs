@@ -7,6 +7,7 @@ var WEB_ADMIN_TOKEN_PROPERTY = 'WEB_ADMIN_TOKEN';
 var SCHEDULED_HANDLER_FUNCTION = 'scheduledMain';
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
+var REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_REACTION_FORWARD_RULE';
 var ADMIN_TOKEN_PARAM = 'admin_token';
 var SLACK_EVENT_TOKEN_PARAM = 'slack_event_token';
 var REACTION_FORWARD_DEFAULT_HISTORY_LIMIT = 100;
@@ -214,6 +215,16 @@ function doGet(event) {
   if (action === 'reaction_forward_dryrun') {
     return runHtmlJsonAction_(function() {
       return processReactionForwardRules_(true);
+    });
+  }
+
+  if (action === 'set_reaction_forward_rule') {
+    var reactionRuleConfirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      if (reactionRuleConfirm !== REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN) {
+        throw new Error('reaction_forward_rulesの更新には confirm=' + REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN + ' が必要です。');
+      }
+      return upsertReactionForwardRuleFromWeb_(event.parameter);
     });
   }
 
@@ -1928,6 +1939,102 @@ function readReactionForwardRulesFromValues_(values) {
   return rules;
 }
 
+function upsertReactionForwardRuleFromWeb_(params) {
+  return upsertReactionForwardRule_({
+    enabled: stringValue_(params.enabled || 'true'),
+    ruleName: stringValue_(params.rule_name || ''),
+    sourceChannelName: stringValue_(params.source_channel_name || ''),
+    reactionName: stringValue_(params.reaction_name || ''),
+    targetChannelName: stringValue_(params.target_channel_name || ''),
+    postMode: stringValue_(params.post_mode || 'copy_text'),
+    includeSourceLink: stringValue_(params.include_source_link || 'false')
+  });
+}
+
+function upsertReactionForwardRule_(input) {
+  var built = buildReactionForwardRuleRow_(input);
+  var sheet = createSheets().getSheetByName('reaction_forward_rules');
+  var values = sheet.getDataRange().getValues();
+  var rowIndex = 0;
+
+  for (var i = 1; i < values.length; i++) {
+    if (stringValue_(values[i][1]).trim() === built.rule.ruleName) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+
+  var action = 'updated';
+  if (!rowIndex) {
+    rowIndex = Math.max(sheet.getLastRow() + 1, 2);
+    action = 'inserted';
+  }
+
+  var range = sheet.getRange(rowIndex, 1, 1, built.row.length);
+  range.setNumberFormat('@');
+  range.setValues([built.row]);
+
+  return {
+    action: action,
+    row_index: rowIndex,
+    rule: built.rule
+  };
+}
+
+function buildReactionForwardRuleRow_(input) {
+  var enabledValue = input.enabled === undefined || stringValue_(input.enabled).trim() === ''
+    ? true
+    : parseBoolean_(input.enabled);
+  var ruleName = stringValue_(input.ruleName).trim();
+  var sourceChannelName = stringValue_(input.sourceChannelName).trim();
+  var reactionName = normalizeReactionName_(input.reactionName);
+  var targetChannelName = stringValue_(input.targetChannelName).trim();
+  var postMode = normalizeReactionForwardPostMode_(input.postMode || 'copy_text');
+  var includeSourceLink = parseBoolean_(input.includeSourceLink);
+
+  if (!ruleName) {
+    throw new Error('reaction_forward_rulesのrule_nameが未設定です。');
+  }
+  if (!sourceChannelName) {
+    throw new Error('reaction_forward_rulesのsource_channel_nameが未設定です: ' + ruleName);
+  }
+  if (!reactionName) {
+    throw new Error('reaction_forward_rulesのreaction_nameが未設定です: ' + ruleName);
+  }
+  if (!targetChannelName) {
+    throw new Error('reaction_forward_rulesのtarget_channel_nameが未設定です: ' + ruleName);
+  }
+  if (sourceChannelName === targetChannelName) {
+    throw new Error('reaction_forward_rulesのsource_channel_nameとtarget_channel_nameが同じです: ' + ruleName);
+  }
+  if (postMode !== 'copy_text') {
+    throw new Error('reaction_forward_rulesのpost_modeはcopy_textのみ対応しています: ' + ruleName);
+  }
+
+  var rule = {
+    enabled: enabledValue,
+    ruleName: ruleName,
+    sourceChannelName: sourceChannelName,
+    reactionName: reactionName,
+    targetChannelName: targetChannelName,
+    postMode: postMode,
+    includeSourceLink: includeSourceLink
+  };
+
+  return {
+    row: [
+      enabledValue ? 'true' : 'false',
+      ruleName,
+      sourceChannelName,
+      reactionName,
+      targetChannelName,
+      postMode,
+      includeSourceLink ? 'true' : 'false'
+    ],
+    rule: rule
+  };
+}
+
 function normalizeReactionForwardPostMode_(value) {
   var mode = normalizeUnicode_(value).trim().toLowerCase();
   return mode || 'copy_text';
@@ -2495,6 +2602,19 @@ function testReactionForwarding_() {
   assertTest_(rules[0].enabled === true, 'reaction forward rule enabled flag must parse');
   assertTest_(rules[0].reactionName === 'share-news', 'reaction forward reaction name must normalize');
   assertTest_(rules[0].includeSourceLink === false, 'reaction forward include_source_link must parse false');
+
+  var builtRule = buildReactionForwardRuleRow_({
+    enabled: '',
+    ruleName: 'assistant_articles',
+    sourceChannelName: 'アシスタント',
+    reactionName: ':輪っか:',
+    targetChannelName: '電話対応',
+    postMode: '',
+    includeSourceLink: ''
+  });
+  assertTest_(builtRule.row[0] === 'true', 'reaction forward web rule must default to enabled');
+  assertTest_(builtRule.row[3] === '輪っか', 'reaction forward web rule must normalize custom emoji name');
+  assertTest_(builtRule.row[4] === '電話対応', 'reaction forward web rule must preserve target channel name');
 
   var textResult = buildReactionForwardPostText_({
     text: '  見出し  \n\n\n 本文です  '
