@@ -70,6 +70,8 @@ include_source_link: false
 
 管理URLから同じルールを更新する場合は、WebアプリURLに `action=set_reaction_forward_rule`、`confirm=UPDATE_REACTION_FORWARD_RULE`、`rule_name`、`source_channel_name`、`reaction_name`、`target_channel_name` を付けます。`reaction_name` は `輪っか` のようにコロンなしで保存されますが、`:輪っか:` の形で渡しても正規化します。
 
+Slack標準絵文字の `:curly_loop:` は画面上で輪っかのように見えますが、API上のリアクション名は `curly_loop` です。`reaction_forward_rules` には表示名ではなくAPI名を入れます。
+
 転送済みは `reaction_forward_posts` シートに保存し、同じルール、同じ元投稿、同じリアクション、同じ転送先では再投稿しません。Slack Events APIの再送や1時間ごとのバックアップ確認が重なっても、投稿直前から履歴保存までScript Lockで直列化して二重投稿を防ぎます。
 
 受信したリアクションイベントは `slack_reaction_events` シートに記録します。記録するのはスタンプ名、対象チャンネル、対象メッセージTS、マッチしたルール数、処理理由、投稿数などの診断情報だけで、投稿本文やトークンは保存しません。
@@ -267,6 +269,10 @@ Apps Script上で以下を実行できます。
   - 請求書転送を手動で本番実行します。
 - `?action=reaction_forward_dryrun`
   - `reaction_forward_rules` の有効ルールについて、直近30日・最大100投稿から転送候補を確認します。Slackへは投稿しません。
+- `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD`
+  - `reaction_forward_rules` の有効ルールについて、候補を実際に転送します。手動実行用で、確認トークンが必須です。
+- `?action=channel_reactions&limit=15`
+  - `アシスタント` の直近投稿と返信に付いているSlack API上のリアクション名を確認します。投稿本文は短いプレビューだけ返します。
 
 ## 請求書ロケット転送の漏れ対策
 

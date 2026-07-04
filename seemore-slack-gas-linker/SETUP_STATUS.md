@@ -1,6 +1,6 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-04 15:54 JST
+Last updated: 2026-07-04 16:14 JST
 
 ## Completed
 
@@ -180,12 +180,22 @@ Last updated: 2026-07-04 15:54 JST
 - `recent_reaction_events` was empty immediately after deployment because the failed `輪っか` attempt happened before event logging existed and the user removed the reaction.
 - A broad `?action=invoice_dryrun` can take too long with `INVOICE_SOURCE_CHANNEL_NAMES=*` now that the Bot is in more channels. Use `?action=diagnostics` for quick health checks and reserve invoice dry runs for targeted investigation.
 
+## 2026-07-04 Versions 49-51 Assistant Curly Loop Fix
+
+- Added admin-protected `?action=channel_reactions` to inspect Slack API reaction names on recent `アシスタント` messages and replies.
+- `?action=channel_reactions&limit=15` showed the user-visible "輪っか" reaction is Slack API reaction name `curly_loop` on source message `1783129012.066479`.
+- Updated production `assistant_articles` rule from `reaction_name=輪っか` to `reaction_name=curly_loop`.
+- `?action=reaction_forward_dryrun` then returned `candidates_found=1`, `planned_count=1`, and `error_count=0`.
+- Added admin-protected `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD` for manual production execution of generic reaction forwarding.
+- Manual `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD` posted one copied assistant summary to `電話対応`: `posted_count=1`, `posted_ts=1783149157.319239`, `error_count=0`.
+- Web `?action=diagnostics` confirmed `reaction_forward_posts` contains the production row with `reaction_name=curly_loop`, target channel `電話対応`, and `dry_run=false`.
+
 ## Apps Script
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 48
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 48
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 51
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 51
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -197,7 +207,7 @@ Last updated: 2026-07-04 15:54 JST
 - Spreadsheet URL: `https://docs.google.com/spreadsheets/d/1VIPGtfBKq6BiIp1Fc9cku5-_KvviNsKNuQhzWOd9g0s/edit`
 - Required sheets exist with valid headers.
 - `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers.
-- `reaction_forward_rules` contains one enabled `assistant_articles` rule: `アシスタント` + `輪っか` -> `電話対応`, `copy_text`, `include_source_link=false`.
+- `reaction_forward_rules` contains one enabled `assistant_articles` rule: `アシスタント` + Slack API reaction `curly_loop` -> `電話対応`, `copy_text`, `include_source_link=false`.
 - `DRY_RUN=true` for scheduled `main()` runs. The verified real Slack post was executed through the targeted `link_threads` action with `dry_run=false`.
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.

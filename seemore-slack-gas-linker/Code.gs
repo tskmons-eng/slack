@@ -6,6 +6,7 @@ var SLACK_EVENT_REQUEST_TOKEN_PROPERTY = 'SLACK_EVENT_REQUEST_TOKEN';
 var WEB_ADMIN_TOKEN_PROPERTY = 'WEB_ADMIN_TOKEN';
 var SCHEDULED_HANDLER_FUNCTION = 'scheduledMain';
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
+var REACTION_FORWARD_CONFIRM_TOKEN = 'RUN_REACTION_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
 var REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_REACTION_FORWARD_RULE';
 var ADMIN_TOKEN_PARAM = 'admin_token';
@@ -215,6 +216,14 @@ function doGet(event) {
     });
   }
 
+  if (action === 'channel_reactions') {
+    var reactionChannelName = stringValue_(event.parameter.channel_name || 'アシスタント');
+    var reactionMessageLimit = parsePositiveInteger_(event.parameter.limit, 10);
+    return jsonOutput_(runJsonAction_(function() {
+      return inspectRecentChannelReactions_(reactionChannelName, reactionMessageLimit);
+    }));
+  }
+
   if (action === 'test_logic') {
     return runHtmlJsonAction_(function() {
       return testResolveVinGroups();
@@ -240,6 +249,16 @@ function doGet(event) {
   if (action === 'reaction_forward_dryrun') {
     return runHtmlJsonAction_(function() {
       return processReactionForwardRules_(true);
+    });
+  }
+
+  if (action === 'reaction_forward_run') {
+    var reactionForwardConfirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      if (reactionForwardConfirm !== REACTION_FORWARD_CONFIRM_TOKEN) {
+        throw new Error('汎用リアクション転送の手動実行には confirm=' + REACTION_FORWARD_CONFIRM_TOKEN + ' が必要です。');
+      }
+      return processReactionForwardRules_(false);
     });
   }
 
@@ -341,6 +360,21 @@ function runHtmlJsonAction_(callback) {
       error: error.message,
       raw_response: error.rawResponse || ''
     });
+  }
+}
+
+function runJsonAction_(callback) {
+  try {
+    return {
+      ok: true,
+      result: callback()
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message,
+      raw_response: error.rawResponse || ''
+    };
   }
 }
 
@@ -898,6 +932,69 @@ function readSheetObjects_(sheetName) {
     });
     return record;
   });
+}
+
+function inspectRecentChannelReactions_(channelName, limit) {
+  var safeLimit = Math.max(1, Math.min(parsePositiveInteger_(limit, 10), 20));
+  var channel = getChannelByName_(channelName || 'アシスタント');
+  var response = slackApi('conversations.history', {
+    channel: channel.id,
+    limit: safeLimit
+  });
+  var rootMessages = response.messages || [];
+  var results = [];
+
+  rootMessages.forEach(function(message) {
+    results.push(reactionInspectionRecord_(channel, message, 'message', ''));
+    if (message.reply_count) {
+      try {
+        var replies = getThreadMessages(channel.id, message.ts).slice(1, 11);
+        replies.forEach(function(reply) {
+          results.push(reactionInspectionRecord_(channel, reply, 'reply', message.ts));
+        });
+      } catch (error) {
+        results.push({
+          kind: 'reply_error',
+          channel_name: channel.name,
+          channel_id: channel.id,
+          thread_ts: message.ts,
+          error: error && error.message ? error.message : String(error)
+        });
+      }
+    }
+  });
+
+  return {
+    checked_at: nowIso_(),
+    channel_name: channel.name,
+    channel_id: channel.id,
+    message_limit: safeLimit,
+    records: results
+  };
+}
+
+function reactionInspectionRecord_(channel, message, kind, threadTs) {
+  var reactions = (message.reactions || []).map(function(reaction) {
+    return {
+      name: normalizeReactionName_(reaction.name),
+      raw_name: reaction.name || '',
+      count: reaction.count || 0,
+      me: Boolean(reaction.me)
+    };
+  });
+  return {
+    kind: kind,
+    channel_name: channel.name,
+    channel_id: channel.id,
+    ts: message.ts || '',
+    thread_ts: threadTs || message.thread_ts || '',
+    user: message.user || message.bot_id || message.username || '',
+    subtype: message.subtype || '',
+    reply_count: message.reply_count || 0,
+    reaction_names: reactions.map(function(reaction) { return reaction.name; }),
+    reactions: reactions,
+    text_preview: normalizeCopiedSlackText_(message.text || '').slice(0, 120)
+  };
 }
 
 function renderSlackSettingsPage_(result, adminToken) {
