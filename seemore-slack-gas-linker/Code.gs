@@ -15,6 +15,7 @@ var REACTION_FORWARD_DEFAULT_HISTORY_LIMIT = 100;
 var REACTION_FORWARD_DEFAULT_LOOKBACK_DAYS = 30;
 var REACTION_FORWARD_MAX_TEXT_LENGTH = 39000;
 var REACTION_FORWARD_MAX_BLOCK_COUNT = 50;
+var REACTION_FORWARD_MAX_REPLY_COUNT = 20;
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
@@ -139,7 +140,10 @@ var SHEET_HEADERS = {
     'posted_text',
     'post_mode',
     'include_source_link',
-    'dry_run'
+    'dry_run',
+    'source_reply_count',
+    'posted_reply_count',
+    'reply_error_count'
   ],
   slack_reaction_events: [
     'received_at',
@@ -550,6 +554,9 @@ function processSlackReactionEvent_(event, settings) {
     truncated_count: 0,
     blocks_used_count: 0,
     blocks_fallback_count: 0,
+    source_reply_count: 0,
+    posted_reply_count: 0,
+    reply_error_count: 0,
     error_count: 0,
     invoice_forwarding: null,
     reaction_forwarding: null
@@ -1448,7 +1455,7 @@ function formatSlackMessagePermalink_(permalink, channelId, messageTs) {
   return baseUrl + '?' + params.join('&') + hash;
 }
 
-function postThreadMessage(channelId, threadTs, text, attachments) {
+function postThreadMessage(channelId, threadTs, text, attachments, blocks) {
   var payload = {
     channel: channelId,
     thread_ts: threadTs,
@@ -1458,6 +1465,9 @@ function postThreadMessage(channelId, threadTs, text, attachments) {
   };
   if (attachments && attachments.length) {
     payload.attachments = attachments;
+  }
+  if (blocks && blocks.length) {
+    payload.blocks = blocks;
   }
   return slackApi('chat.postMessage', payload);
 }
@@ -1496,34 +1506,49 @@ function updateChannelMessage(channelId, messageTs, text, attachments, blocks) {
 }
 
 function postReactionForwardPayload_(channelId, postPayload, context) {
-  if (postPayload.blocks && postPayload.blocks.length) {
-    try {
-      var responseWithBlocks = postChannelMessage(channelId, postPayload.text, null, postPayload.blocks);
-      responseWithBlocks.reaction_forward_used_blocks = true;
-      responseWithBlocks.reaction_forward_blocks_fallback = false;
-      return responseWithBlocks;
-    } catch (error) {
-      if (!isSlackBlocksError_(error)) {
-        throw error;
-      }
-      saveError(context + ':blocks_fallback', error);
-      var fallbackResponse = postChannelMessage(channelId, postPayload.text);
-      fallbackResponse.reaction_forward_used_blocks = false;
-      fallbackResponse.reaction_forward_blocks_fallback = true;
-      return fallbackResponse;
+  return sendReactionForwardPayloadWithFallback_(
+    postPayload,
+    context,
+    function(blocks) {
+      return postChannelMessage(channelId, postPayload.text, null, blocks);
+    },
+    function() {
+      return postChannelMessage(channelId, postPayload.text);
     }
-  }
+  );
+}
 
-  var response = postChannelMessage(channelId, postPayload.text);
-  response.reaction_forward_used_blocks = false;
-  response.reaction_forward_blocks_fallback = false;
-  return response;
+function postReactionForwardThreadPayload_(channelId, threadTs, postPayload, context) {
+  return sendReactionForwardPayloadWithFallback_(
+    postPayload,
+    context,
+    function(blocks) {
+      return postThreadMessage(channelId, threadTs, postPayload.text, null, blocks);
+    },
+    function() {
+      return postThreadMessage(channelId, threadTs, postPayload.text);
+    }
+  );
 }
 
 function updateReactionForwardPayload_(channelId, messageTs, postPayload, context) {
+  return sendReactionForwardPayloadWithFallback_(
+    postPayload,
+    context,
+    function(blocks) {
+      return updateChannelMessage(channelId, messageTs, postPayload.text, null, blocks);
+    },
+    function() {
+      return updateChannelMessage(channelId, messageTs, postPayload.text);
+    }
+  );
+}
+
+function sendReactionForwardPayloadWithFallback_(postPayload, context, sendWithBlocks, sendTextOnly, saveErrorFn) {
+  var errorSaver = saveErrorFn || saveError;
   if (postPayload.blocks && postPayload.blocks.length) {
     try {
-      var responseWithBlocks = updateChannelMessage(channelId, messageTs, postPayload.text, null, postPayload.blocks);
+      var responseWithBlocks = sendWithBlocks(postPayload.blocks);
       responseWithBlocks.reaction_forward_used_blocks = true;
       responseWithBlocks.reaction_forward_blocks_fallback = false;
       return responseWithBlocks;
@@ -1531,15 +1556,15 @@ function updateReactionForwardPayload_(channelId, messageTs, postPayload, contex
       if (!isSlackBlocksError_(error)) {
         throw error;
       }
-      saveError(context + ':blocks_fallback', error);
-      var fallbackResponse = updateChannelMessage(channelId, messageTs, postPayload.text);
+      errorSaver(context + ':blocks_fallback', error);
+      var fallbackResponse = sendTextOnly();
       fallbackResponse.reaction_forward_used_blocks = false;
       fallbackResponse.reaction_forward_blocks_fallback = true;
       return fallbackResponse;
     }
   }
 
-  var response = updateChannelMessage(channelId, messageTs, postPayload.text);
+  var response = sendTextOnly();
   response.reaction_forward_used_blocks = false;
   response.reaction_forward_blocks_fallback = false;
   return response;
@@ -2129,11 +2154,27 @@ function processReactionForwardMessage_(message, sourceChannel, targetChannel, r
       stats.truncated_count += 1;
     }
 
+    var replyForwardResult = {
+      source_reply_count: 0,
+      posted_reply_count: 0,
+      reply_error_count: 0
+    };
     var postResponse = postReactionForwardPayload_(
       targetChannel.id,
       postPayload,
       'postReactionForwardMessage:' + rule.ruleName + ':' + sourceMessageTs
     );
+    if (postResponse.ts && parsePositiveInteger_(message.reply_count, 0) > 0) {
+      replyForwardResult = forwardReactionForwardReplies_(
+        sourceChannel.id,
+        sourceMessageTs,
+        targetChannel.id,
+        postResponse.ts,
+        rule,
+        stats,
+        'postReactionForwardReplies:' + rule.ruleName + ':' + sourceMessageTs
+      );
+    }
     saveReactionForwardPost_({
       processed_at: nowIso_(),
       rule_name: rule.ruleName,
@@ -2148,7 +2189,10 @@ function processReactionForwardMessage_(message, sourceChannel, targetChannel, r
       posted_text: postPayload.text,
       post_mode: rule.postMode,
       include_source_link: rule.includeSourceLink,
-      dry_run: false
+      dry_run: false,
+      source_reply_count: replyForwardResult.source_reply_count,
+      posted_reply_count: replyForwardResult.posted_reply_count,
+      reply_error_count: replyForwardResult.reply_error_count
     });
     if (postResponse.reaction_forward_used_blocks) {
       stats.blocks_used_count += 1;
@@ -2184,6 +2228,112 @@ function getChannelMessageByTs_(channelId, messageTs) {
     }
   }
   throw new Error('Slack message not found: ' + channelId + ':' + messageTs);
+}
+
+function forwardReactionForwardReplies_(sourceChannelId, sourceMessageTs, targetChannelId, targetThreadTs, rule, stats, context) {
+  var threadMessages = getThreadMessages(sourceChannelId, sourceMessageTs);
+  var replyMessages = reactionForwardReplyMessagesFromThread_(threadMessages, sourceMessageTs);
+  return forwardReactionForwardReplyMessages_(
+    replyMessages,
+    targetChannelId,
+    targetThreadTs,
+    rule,
+    stats,
+    context,
+    null
+  );
+}
+
+function reactionForwardReplyMessagesFromThread_(threadMessages, rootMessageTs) {
+  return (threadMessages || []).filter(function(message) {
+    if (!message || !message.ts) {
+      return false;
+    }
+    return normalizeSlackTsForCompare_(message.ts) !== normalizeSlackTsForCompare_(rootMessageTs);
+  });
+}
+
+function forwardReactionForwardReplyMessages_(replyMessages, targetChannelId, targetThreadTs, rule, stats, context, poster) {
+  var replies = replyMessages || [];
+  var result = {
+    source_reply_count: replies.length,
+    posted_reply_count: 0,
+    reply_error_count: 0,
+    omitted_reply_count: Math.max(0, replies.length - REACTION_FORWARD_MAX_REPLY_COUNT)
+  };
+  var postReply = poster || function(postPayload, reply, replyIndex) {
+    return postReactionForwardThreadPayload_(
+      targetChannelId,
+      targetThreadTs,
+      postPayload,
+      context + ':' + (reply && reply.ts ? reply.ts : replyIndex)
+    );
+  };
+
+  replies.slice(0, REACTION_FORWARD_MAX_REPLY_COUNT).forEach(function(reply, index) {
+    try {
+      var postPayload = buildReactionForwardReplyPayload_(reply, rule);
+      if (!postPayload.text) {
+        return;
+      }
+      var postResponse = postReply(postPayload, reply, index);
+      result.posted_reply_count += 1;
+      if (postResponse && postResponse.reaction_forward_used_blocks) {
+        stats.blocks_used_count = (stats.blocks_used_count || 0) + 1;
+      }
+      if (postResponse && postResponse.reaction_forward_blocks_fallback) {
+        stats.blocks_fallback_count = (stats.blocks_fallback_count || 0) + 1;
+      }
+    } catch (error) {
+      result.reply_error_count += 1;
+      saveError(context + ':' + (reply && reply.ts ? reply.ts : index), error);
+    }
+  });
+
+  if (result.omitted_reply_count > 0) {
+    try {
+      postReply(buildReactionForwardReplyOmittedPayload_(result.omitted_reply_count), null, 'omitted');
+    } catch (error) {
+      result.reply_error_count += 1;
+      saveError(context + ':omitted_notice', error);
+    }
+  }
+
+  stats.source_reply_count = (stats.source_reply_count || 0) + result.source_reply_count;
+  stats.posted_reply_count = (stats.posted_reply_count || 0) + result.posted_reply_count;
+  stats.reply_error_count = (stats.reply_error_count || 0) + result.reply_error_count;
+  return result;
+}
+
+function buildReactionForwardReplyPayload_(reply, rule) {
+  var replyRule = {
+    ruleName: rule.ruleName,
+    sourceChannelName: rule.sourceChannelName,
+    reactionName: rule.reactionName,
+    targetChannelName: rule.targetChannelName,
+    postMode: rule.postMode,
+    includeSourceLink: false
+  };
+  return buildReactionForwardPostPayload_(reply || {}, replyRule, '');
+}
+
+function buildReactionForwardReplyOmittedPayload_(omittedCount) {
+  var text = '（コメントが' + REACTION_FORWARD_MAX_REPLY_COUNT + '件を超えたため、残り' + omittedCount + '件は省略）';
+  return {
+    text: text,
+    blocks: [
+      {
+        type: 'context',
+        elements: [
+          {
+            type: 'mrkdwn',
+            text: text
+          }
+        ]
+      }
+    ],
+    truncated: false
+  };
 }
 
 function findMatchingReactionForwardRules_(reactionName, sourceChannel) {
@@ -2230,6 +2380,9 @@ function makeReactionForwardStats_(dryRunOverride) {
     truncated_count: 0,
     blocks_used_count: 0,
     blocks_fallback_count: 0,
+    source_reply_count: 0,
+    posted_reply_count: 0,
+    reply_error_count: 0,
     invalid_rule_count: 0,
     error_count: 0,
     last_error: '',
@@ -2248,6 +2401,9 @@ function mergeReactionForwardStats_(target, source) {
     'truncated_count',
     'blocks_used_count',
     'blocks_fallback_count',
+    'source_reply_count',
+    'posted_reply_count',
+    'reply_error_count',
     'invalid_rule_count',
     'error_count'
   ].forEach(function(key) {
@@ -2797,7 +2953,10 @@ function saveReactionForwardPost_(record) {
     record.posted_text || '',
     record.post_mode || '',
     String(Boolean(record.include_source_link)),
-    String(Boolean(record.dry_run))
+    String(Boolean(record.dry_run)),
+    record.source_reply_count || 0,
+    record.posted_reply_count || 0,
+    record.reply_error_count || 0
   ].map(function(value) {
     return stringValue_(value);
   });
@@ -2854,6 +3013,9 @@ function refreshReactionForwardPosts_(confirm, limitOverride) {
     empty_message_skipped_count: 0,
     blocks_used_count: 0,
     blocks_fallback_count: 0,
+    source_reply_count: 0,
+    posted_reply_count: 0,
+    reply_error_count: 0,
     error_count: 0,
     last_error: ''
   };
@@ -2868,6 +3030,7 @@ function refreshReactionForwardPosts_(confirm, limitOverride) {
     var sourceUrl = stringValue_(row[5]);
     var targetChannelId = stringValue_(row[8]);
     var postedTs = stringValue_(row[9]);
+    var existingPostedReplyCount = parsePositiveInteger_(row[15], 0);
 
     if (dryRun || !ruleName || !sourceChannelId || !sourceMessageTs || !targetChannelId || !postedTs) {
       stats.skipped_count += 1;
@@ -2921,6 +3084,23 @@ function refreshReactionForwardPosts_(confirm, limitOverride) {
       sheet.getRange(i + 1, 6).setValue(sourceUrl);
       sheet.getRange(i + 1, 11).setNumberFormat('@');
       sheet.getRange(i + 1, 11).setValue(postPayload.text);
+      if (existingPostedReplyCount === 0) {
+        var replyForwardResult = forwardReactionForwardReplies_(
+          sourceChannelId,
+          sourceMessageTs,
+          targetChannelId,
+          postedTs,
+          rule,
+          stats,
+          'refreshReactionForwardReplies:' + ruleName + ':' + postedTs
+        );
+        sheet.getRange(i + 1, 15, 1, 3).setNumberFormat('@');
+        sheet.getRange(i + 1, 15, 1, 3).setValues([[
+          replyForwardResult.source_reply_count,
+          replyForwardResult.posted_reply_count,
+          replyForwardResult.reply_error_count
+        ]]);
+      }
       if (updateResponse.reaction_forward_used_blocks) {
         stats.blocks_used_count += 1;
       }
@@ -3425,6 +3605,85 @@ function testReactionForwarding_() {
   assertTest_(articleTocPayload.text.indexOf('2. 背景') !== -1, 'reaction forward payload must add TOC from article subheadings');
   assertTest_(articleTocPayload.blocks.length === 3, 'reaction forward TOC must be inserted as a Slack block');
   assertTest_(articleTocPayload.blocks[1].text.text.indexOf('*目次*') !== -1, 'reaction forward TOC block must be inserted before summary blocks');
+
+  var replyMessages = reactionForwardReplyMessagesFromThread_([
+    {ts: '100.100000', text: 'root'},
+    {ts: '100.200000', text: 'コメント1'},
+    {
+      ts: '100.300000',
+      text: '',
+      blocks: [{type: 'section', text: {type: 'mrkdwn', text: '*コメント2*'}}]
+    }
+  ], '100.1');
+  assertTest_(replyMessages.length === 2, 'reaction forward replies must exclude the root message');
+
+  var replyStats = makeReactionForwardStats_(false);
+  var postedReplies = [];
+  var replyResult = forwardReactionForwardReplyMessages_(
+    replyMessages,
+    'C_TARGET',
+    '200.100000',
+    rules[0],
+    replyStats,
+    'testReactionForwardReplies',
+    function(postPayload) {
+      postedReplies.push(postPayload);
+      return {
+        ts: 'reply.' + postedReplies.length,
+        reaction_forward_used_blocks: Boolean(postPayload.blocks && postPayload.blocks.length),
+        reaction_forward_blocks_fallback: false
+      };
+    }
+  );
+  assertTest_(replyResult.source_reply_count === 2, 'reaction forward reply source count must be recorded');
+  assertTest_(replyResult.posted_reply_count === 2, 'reaction forward replies must be posted');
+  assertTest_(postedReplies[1].blocks.length === 1, 'reaction forward reply blocks must be preserved');
+  assertTest_(replyStats.posted_reply_count === 2, 'reaction forward reply stats must be merged');
+
+  var manyReplies = [];
+  for (var replyIndex = 0; replyIndex < 22; replyIndex += 1) {
+    manyReplies.push({ts: '101.' + replyIndex, text: 'コメント' + replyIndex});
+  }
+  var manyPosted = [];
+  var manyReplyResult = forwardReactionForwardReplyMessages_(
+    manyReplies,
+    'C_TARGET',
+    '201.100000',
+    rules[0],
+    makeReactionForwardStats_(false),
+    'testReactionForwardManyReplies',
+    function(postPayload) {
+      manyPosted.push(postPayload);
+      return {
+        ts: 'many.' + manyPosted.length,
+        reaction_forward_used_blocks: false,
+        reaction_forward_blocks_fallback: false
+      };
+    }
+  );
+  assertTest_(manyReplyResult.source_reply_count === 22, 'reaction forward reply source count must include omitted replies');
+  assertTest_(manyReplyResult.posted_reply_count === REACTION_FORWARD_MAX_REPLY_COUNT, 'reaction forward replies must be capped');
+  assertTest_(manyPosted.length === REACTION_FORWARD_MAX_REPLY_COUNT + 1, 'reaction forward omitted reply notice must be posted');
+  assertTest_(manyPosted[manyPosted.length - 1].text.indexOf('残り2件は省略') !== -1, 'reaction forward omitted reply notice must include omitted count');
+
+  var fallbackErrors = [];
+  var fallbackResponse = sendReactionForwardPayloadWithFallback_(
+    {text: '本文', blocks: [{type: 'section', text: {type: 'mrkdwn', text: '*本文*'}}]},
+    'testReactionForwardBlocksFallback',
+    function() {
+      var error = new Error('Slack API error on chat.postMessage: invalid_blocks');
+      error.rawResponse = '{"ok":false,"error":"invalid_blocks"}';
+      throw error;
+    },
+    function() {
+      return {ts: 'fallback.1'};
+    },
+    function(context) {
+      fallbackErrors.push(context);
+    }
+  );
+  assertTest_(fallbackResponse.reaction_forward_blocks_fallback === true, 'reaction forward block failure must fall back to text');
+  assertTest_(fallbackErrors.length === 1, 'reaction forward block fallback must record an error');
 
   var richText = buildReactionForwardPostText_({
     text: '',

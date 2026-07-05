@@ -281,3 +281,14 @@ The manifest includes:
 - Deployed GAS version 55 to add summary TOC generation.
 - Refreshed the latest `電話対応` forwarded post again after version 55: `updated_count=1`, `blocks_used_count=1`, `blocks_fallback_count=0`.
 - `電話対応` preview confirmed the forwarded post now starts with `*目次* 1. 要約 2. 次の対応`.
+
+## 2026-07-05 Assistant Article Reply Forwarding
+
+- Reaction forwarding now copies Slack thread replies that exist when the source post is transferred.
+- Forwarded comments are posted as replies under the target parent post, preserving text and supported Slack blocks where possible.
+- Reply forwarding is capped at 20 source replies; when more exist, the target thread gets an omitted-count notice.
+- Added `source_reply_count`, `posted_reply_count`, and `reply_error_count` to `reaction_forward_posts`.
+- `refresh_reaction_forward_posts` can add source replies for older forward rows where `posted_reply_count` is blank or `0`.
+- Deployed GAS version 56 to the active Slack Events Web App deployment.
+- Web `status` confirmed `reaction_forward_posts` header is valid after adding reply audit columns.
+- `channel_reactions` checked the latest 20 `アシスタント` messages; none had Slack thread replies, so live comment-forward verification remains pending until a commented source post exists.

@@ -31,7 +31,7 @@
 - GAS/Slack制限対策として、GAS実行時間に近づく前に途中停止し、未確認チャンネルを次回優先する。Slack API 429時は `Retry-After` に従って短く待って再試行する。
 - Slack Events API用にGAS Webアプリを公開する場合でも、管理系アクションは `WEB_ADMIN_TOKEN` 必須にし、Slackイベントは `SLACK_EVENT_REQUEST_TOKEN` 付きRequest URLだけ受け付ける。
 - アシスタント記事転送は、既存の請求書ロケット転送を置き換えず `reaction_forward_rules` / `reaction_forward_posts` で別管理する。
-- `アシスタント` チャンネルを開けない転送先メンバー向けなので、初期運用は元投稿リンクではなく本文コピーを優先し、`include_source_link=false` を基本にする。元投稿がSlack blocksで装飾されている場合は、本文だけでなくblocksも保持して転送する。要約投稿内に小見出しがある場合は、転送先で目次として見えるようにする。
+- `アシスタント` チャンネルを開けない転送先メンバー向けなので、初期運用は元投稿リンクではなく本文コピーを優先し、`include_source_link=false` を基本にする。元投稿がSlack blocksで装飾されている場合は、本文だけでなくblocksも保持して転送する。要約投稿内に小見出しがある場合は、転送先で目次として見えるようにする。元投稿にSlackスレッド返信がある場合は、スタンプ時点に存在する返信を転送先親投稿のスレッド返信として同梱する。
 - アシスタント記事転送もSlack Events APIの `reaction_added` で即時処理し、1時間ごとの `scheduledMain()` では直近30日・最大100投稿をバックアップ確認する。
 - 同じ元投稿、同じスタンプ、同じ転送先への再投稿は `reaction_forward_posts` とScript Lockで防ぐ。
 
