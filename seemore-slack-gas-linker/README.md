@@ -35,7 +35,7 @@ Slack内の車案件スレッドを、車体番号またはスレIDの完全一�
 
 ## 請求書ロケット転送
 
-`INVOICE_SOURCE_CHANNEL_NAMES` で指定した監視元の投稿または返信に指定リアクション `rocket` が付いている場合、`依頼＿請求書` へ転送します。初期値は `*` で、Botが参加している全チャンネルを監視します。ただし転送先の `依頼＿請求書` 自身は監視対象から除外します。PDFファイルがある場合は以下の形式で投稿します。
+`INVOICE_SOURCE_CHANNEL_NAMES` で指定した監視元の投稿または返信に指定リアクション `rocket` が付いている場合、`依頼＿請求書` へ転送します。監視元は請求書運用の依頼系チャンネルを明示指定します。`*` はBotが参加している全チャンネルを監視しますが、記事転送用など関係ないチャンネルも走査して遅延の原因になるため通常は使いません。転送先の `依頼＿請求書` 自身は監視対象から除外します。PDFファイルがある場合は以下の形式で投稿します。
 
 ```text
 【ファイル名 2026-06-12】
@@ -46,7 +46,7 @@ PDFファイルがない場合は、元投稿のSlackリンクだけを投稿し
 
 Bot投稿ではSlack内部リンクが手動共有と同じネイティブプレビューにならないことがあるため、投稿本文のURLはリンクラベル化し、元投稿を開けるカードを添付します。既存の請求書転送投稿は `?action=refresh_invoice_previews&confirm=RUN_INVOICE_FORWARD` で同じ形式に更新できます。
 
-チャンネルごとの最終確認状態は `invoice_channel_scan_state` シートに保存します。通常は直近の最新投稿が前回スキャン時から変わったチャンネルだけを深く確認し、新着がないチャンネルはスキップします。リアクションが古い投稿へ後付けされた場合に備え、`INVOICE_FORCE_RESCAN_HOURS` 時間を過ぎたチャンネルは新着がなくても再スキャンします。
+チャンネルごとの最終確認状態は `invoice_channel_scan_state` シートに保存します。通常は直近の最新投稿が前回スキャン時から変わったチャンネルだけを深く確認し、新着がないチャンネルはスキップします。リアクションが古い投稿へ後付けされた場合に備え、`INVOICE_FORCE_RESCAN_HOURS` 時間を過ぎたチャンネルは新着がなくても再スキャンします。履歴ページ・各rootスレッド返信を確認する前にも実行時間を確認し、時間が近ければ未完了として状態を残して次回の走査へ回します。
 
 新着が多いチャンネルで直近1ページから漏れないよう、`conversations.history` は `INVOICE_HISTORY_PAGE_LIMIT` ページまで追います。初回と強制再スキャンは `INVOICE_LOOKBACK_DAYS` の範囲、新着検知時は前回見た最新投稿以降を確認します。
 
@@ -219,7 +219,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `MAIN_TRIGGER_INTERVAL_HOURS` | `1` | `scheduledMain()` を何時間ごとに実行するかです。`1` なら1時間ごとです。空にすると `MAIN_TRIGGER_HOURS` を使います。 |
 | `INVOICE_FORWARD_ENABLED` | `true` | ロケットリアクション付き投稿の請求書転送を有効にします。 |
 | `INVOICE_SOURCE_CHANNEL_NAME` | `依頼＿ALL` | 旧設定です。`INVOICE_SOURCE_CHANNEL_NAMES` が空の場合だけ使う単一監視元です。 |
-| `INVOICE_SOURCE_CHANNEL_NAMES` | `*` | ロケットリアクションを確認するチャンネル名です。`*` はBot参加済み全チャンネル、個別指定はカンマ区切りです。 |
+| `INVOICE_SOURCE_CHANNEL_NAMES` | 依頼系6チャンネル | ロケットリアクションを確認するチャンネル名です。個別指定はカンマ区切りです。`*` はBot参加済み全チャンネルとなり、関係ないチャンネルが増えると遅延の原因になるため通常は使いません。 |
 | `INVOICE_TARGET_CHANNEL_NAME` | `依頼＿請求書` | 請求書転送先チャンネル名です。 |
 | `INVOICE_REACTION_NAME` | `rocket` | 転送条件にするSlack絵文字名です。 |
 | `INVOICE_LOOKBACK_DAYS` | `30` | 請求書転送で直近何日分を見るかです。旧デフォルト `7` は自動で `30` に上げます。 |
@@ -227,7 +227,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `INVOICE_HISTORY_PAGE_LIMIT` | `3` | 1チャンネルあたり何ページまで履歴を追うかです。`100 x 3` で最大300投稿を確認します。 |
 | `INVOICE_REPLY_THREAD_LIMIT` | `25` | 請求書転送で返信を確認するrootスレッド数の上限です。旧デフォルト `10` は自動で `25` に上げます。 |
 | `INVOICE_FORCE_RESCAN_HOURS` | `3` | 新着がないチャンネルでも、後付けリアクション検知のために再スキャンする間隔です。旧デフォルト `6` は自動で `3` に下げます。 |
-| `INVOICE_MAX_RUNTIME_SECONDS` | `300` | 請求書ロケット監視がGASの1実行上限に近づく前に途中停止する秒数です。残ったチャンネルは次回実行で優先されます。 |
+| `INVOICE_MAX_RUNTIME_SECONDS` | `300` | 請求書ロケット監視の時間上限です。120秒の安全余白を引いた時点で、履歴ページ・root投稿・返信の途中でも未完了として停止します。残ったチャンネルは次回実行で再確認されます。 |
 | `INVOICE_FORWARD_DRY_RUN` | `false` | `true` にすると請求書転送も投稿せず候補数だけ確認します。 |
 
 ## テスト関数
@@ -267,6 +267,12 @@ Apps Script上で以下を実行できます。
   - 請求書ロケット監視元の直近投稿から、ロケットリアクション付きの転送候補を確認します。PDFがない候補はリンクのみとして扱います。Slackへは投稿しません。
 - `?action=invoice_run&confirm=RUN_INVOICE_FORWARD`
   - 請求書転送を手動で本番実行します。
+- `?action=invoice_run_channel&channel_name=チャンネル名&confirm=RUN_INVOICE_FORWARD`
+  - 指定チャンネルだけを本番再処理します。保存済みの走査状態にかかわらず30日分を強制再走査するため、未転送ロケットの調査・救済に使います。
+- `?action=invoice_run_message&channel_name=チャンネル名&thread_ts=親投稿TS&message_ts=投稿TS&confirm=RUN_INVOICE_FORWARD`
+  - 指定した元投稿またはスレッド返信だけを本番転送します。未送信ロケットを特定できたときの救済に使います。
+- `?action=set_invoice_source_channels&channel_names=チャンネル名1,チャンネル名2&confirm=UPDATE_INVOICE_SOURCE_CHANNELS`
+  - 請求書ロケットの監視元を明示指定へ更新します。`*` は受け付けません。
 - `?action=reaction_forward_dryrun`
   - `reaction_forward_rules` の有効ルールについて、直近30日・最大100投稿から転送候補を確認します。Slackへは投稿しません。
 - `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD`
@@ -292,7 +298,7 @@ Apps Script上で以下を実行できます。
 
 2026-06-14に公式ドキュメントで確認した目安です。実際の上限はGoogle/Slack側で変更されることがあります。
 
-- Apps Scriptは1実行6分が上限です。`INVOICE_MAX_RUNTIME_SECONDS=300` で5分付近に抑え、途中チャンネルは次回へ回します。
+- Apps Scriptは1実行6分が上限です。`INVOICE_MAX_RUNTIME_SECONDS=300` でもWeb実行が5分付近で切れることがあるため、実際の走査は120秒の余白を残し、履歴ページ・root投稿・返信の途中でも停止できるようにしています。
 - Apps ScriptのURL FetchはGoogle個人アカウントで1日20,000回、Google Workspaceで1日100,000回が目安です。
 - Apps Scriptのトリガー実行時間合計はGoogle個人アカウントで1日90分、Google Workspaceで1日6時間が目安です。
 - Slack Web APIはメソッドごと、ワークスペースごとに分単位のレート制限があり、超過時はHTTP 429と `Retry-After` が返ります。

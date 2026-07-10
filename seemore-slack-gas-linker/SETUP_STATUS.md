@@ -292,3 +292,14 @@ The manifest includes:
 - Deployed GAS version 56 to the active Slack Events Web App deployment.
 - Web `status` confirmed `reaction_forward_posts` header is valid after adding reply audit columns.
 - `channel_reactions` checked the latest 20 `アシスタント` messages; none had Slack thread replies, so live comment-forward verification remains pending until a commented source post exists.
+
+## 2026-07-10 Invoice Rocket Recovery
+
+- Root cause of delayed invoice forwarding: `INVOICE_SOURCE_CHANNEL_NAMES=*` included newly joined non-invoice channels `アシスタント` and `電話対応`. The assistant channel alone consumed one broad scan before invoice channels were reached.
+- Updated the production invoice source setting to the six request channels: `carmore依頼`, `オールマシンサービス`, `依頼_all`, `依頼_引き継ぎ`, `依頼_車案件`, and `依頼_米取引`.
+- Added a 120-second safety reserve inside invoice history and thread-reply scanning. The run returns deferred-state data instead of losing its result to the Web execution timeout.
+- Added admin-protected targeted recovery actions: `invoice_run_channel` forces a 30-day rescan for one source channel, and `invoice_run_message` forwards one identified root post or thread reply.
+- Deployed GAS version 60 to both active Web App deployments.
+- Production recovery checks completed without API errors: four request channels had no rocket candidates in the 30-day window; a 365-day scan of `依頼_all` checked 287 root posts and 75 replies with no candidate before its safe time boundary.
+- `依頼_米取引` had two visible rocket reactions in one thread, but both were already in `invoice_reaction_posts`; direct recovery correctly returned `duplicate_skipped_count=1` for each rather than posting duplicates.
+- A still-missing rocket older than the scanned history pages needs its Slack post URL or its source channel and thread location for direct recovery. The new `invoice_run_message` action is available for that case.
