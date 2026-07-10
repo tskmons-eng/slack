@@ -296,7 +296,8 @@ The manifest includes:
 ## 2026-07-10 Invoice Rocket Recovery
 
 - Root cause of delayed invoice forwarding: `INVOICE_SOURCE_CHANNEL_NAMES=*` included newly joined non-invoice channels `アシスタント` and `電話対応`. The assistant channel alone consumed one broad scan before invoice channels were reached.
-- Updated the production invoice source setting to the six request channels: `carmore依頼`, `オールマシンサービス`, `依頼_all`, `依頼_引き継ぎ`, `依頼_車案件`, and `依頼_米取引`.
+- Updated the production invoice source setting to the six request channels: `carmore依頼`, `オールマシンサービス`, `依頼_all`, `依頼_引き継ぎ`, `依頼_車案件`, and `依頼＿小売取引`.
+- The former `依頼_米取引` channel was renamed in Slack to `依頼＿小売取引`; the production setting was updated successfully after verifying the renamed channel through the Bot API.
 - Added a 120-second safety reserve inside invoice history and thread-reply scanning. The run returns deferred-state data instead of losing its result to the Web execution timeout.
 - Added admin-protected targeted recovery actions: `invoice_run_channel` forces a 30-day rescan for one source channel, and `invoice_run_message` forwards one identified root post or thread reply.
 - Deployed GAS version 60 to both active Web App deployments.

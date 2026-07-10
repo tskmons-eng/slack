@@ -33,7 +33,7 @@ var DEFAULT_SETTINGS = {
   MAIN_TRIGGER_INTERVAL_HOURS: '1',
   INVOICE_FORWARD_ENABLED: 'true',
   INVOICE_SOURCE_CHANNEL_NAME: '依頼＿ALL',
-  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_引き継ぎ,依頼_車案件,依頼_米取引',
+  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_引き継ぎ,依頼_車案件,依頼＿小売取引',
   INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
   INVOICE_REACTION_NAME: 'rocket',
   INVOICE_LOOKBACK_DAYS: '30',
@@ -4732,15 +4732,23 @@ function listJoinedChannelsForInvoice_() {
     saveError('listJoinedChannelsForInvoice:target', error);
   }
   var joinedChannels = getJoinedChannels_().map(channelSummary_);
-  var invoiceSources = targetChannel
-    ? resolveInvoiceSourceChannels_(settings, targetChannel).map(channelSummary_)
-    : [];
+  var invoiceSources = [];
+  var invoiceSourceError = '';
+  if (targetChannel) {
+    try {
+      invoiceSources = resolveInvoiceSourceChannels_(settings, targetChannel).map(channelSummary_);
+    } catch (error) {
+      invoiceSourceError = error && error.message ? error.message : String(error);
+      saveError('listJoinedChannelsForInvoice:sources', error);
+    }
+  }
   return {
     checked_at: nowIso_(),
     joined_count: joinedChannels.length,
     invoice_source_count: invoiceSources.length,
     target_channel: targetChannel ? channelSummary_(targetChannel) : null,
     invoice_source_setting: settings.invoiceSourceChannelNames.join(','),
+    invoice_source_error: invoiceSourceError,
     channels: joinedChannels,
     invoice_sources: invoiceSources
   };
