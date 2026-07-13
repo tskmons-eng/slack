@@ -492,6 +492,10 @@ function doPost(event) {
       secret_fingerprint: bytesToHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, statusSettings.vehicleApiSecret))
     });
   }
+  if (action === 'sync_vehicle_watches') {
+    requireWebAdmin_(event);
+    return jsonOutput_(syncVehicleActiveWatches_(getSettings()));
+  }
   if (action !== 'save_slack_token') {
     var slackEventPayload = parseSlackEventPayload_(event);
     if (slackEventPayload) {
