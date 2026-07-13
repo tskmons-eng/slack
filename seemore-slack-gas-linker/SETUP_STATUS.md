@@ -9,6 +9,8 @@ Last updated: 2026-07-04 18:05 JST
 - Published GAS version 67 to both active Web App deployments.
 - Live signed connectivity test returned `ok=true` and `review_state=pending_review`. Unsigned requests remain rejected by the vehicle API.
 - Only `SEEMORE_SHARE_ID` plus channel/thread identifiers and a fixed safe summary are sent. Slack message text and vehicle/customer financial data are not forwarded.
+- Vehicle monitoring now reads the signed `active-watches` API independently from invoice and reaction forwarding. It registers the Slack permalink, sends only fixed summaries and status candidates, performs one final thread sync for `closing`, then sends `close_acknowledged` so the vehicle app can stop monitoring.
+- Closed watches are absent from scheduled polling. Message text remains in Slack; the vehicle API receives only share/channel/thread/message identifiers, fixed summaries, and a limited status candidate.
 
 ## Completed
 

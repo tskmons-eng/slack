@@ -476,9 +476,9 @@ function doPost(event) {
     requireWebAdmin_(event);
     var vehicleSettings = getSettings();
     return jsonOutput_(sendVehicleEventToCarManagement_({
-      type: 'connectivity_test',
+      type: 'message_observed',
       channel_id: vehicleSettings.vehicleChannelId,
-      summary: 'GAS署名接続テスト'
+      summary: 'GASから車管理APIへの署名付き疎通確認です。'
     }, 'gas-connectivity-test-' + new Date().getTime(), vehicleSettings));
   }
   if (action === 'vehicle_integration_status') {
@@ -641,11 +641,19 @@ function processVehicleMessageEvent_(event, settings, eventId) {
   }
   var shareId = match[1].toUpperCase();
   var effectiveEventId = stringValue_(eventId).trim() || ['slack', event.channel, event.ts].join(':');
+  var threadTs = event.thread_ts || event.ts;
+  var permalink = '';
+  try {
+    permalink = slackApi('chat.getPermalink', {channel: event.channel, message_ts: threadTs}).permalink || '';
+  } catch (permalinkError) {
+    saveError('processVehicleMessageEvent_:permalink', permalinkError);
+  }
   sendVehicleEventToCarManagement_({
-    type: 'share_posted',
+    type: 'thread_registered',
     share_id: shareId,
     channel_id: event.channel,
-    thread_ts: event.thread_ts || event.ts,
+    thread_ts: threadTs,
+    permalink: permalink || undefined,
     summary: 'Slackへ共有案件が投稿されました。'
   }, effectiveEventId, settings);
   result.ignored = false;
@@ -655,6 +663,10 @@ function processVehicleMessageEvent_(event, settings, eventId) {
 }
 
 function sendVehicleEventToCarManagement_(payload, eventId, settings) {
+  return sendVehicleApiRequest_(settings.vehicleApiUrl, payload, eventId, settings);
+}
+
+function sendVehicleApiRequest_(url, payload, eventId, settings) {
   var body = JSON.stringify(payload).replace(/[^\x20-\x7E]/g, function(character) {
     return '\\u' + ('0000' + character.charCodeAt(0).toString(16)).slice(-4);
   });
@@ -663,7 +675,7 @@ function sendVehicleEventToCarManagement_(payload, eventId, settings) {
   var signatureInput = [timestamp, nonce, eventId, body].join('\n');
   var signatureBytes = Utilities.computeHmacSha256Signature(signatureInput, settings.vehicleApiSecret);
   var signature = bytesToHex_(signatureBytes);
-  var response = UrlFetchApp.fetch(settings.vehicleApiUrl, {
+  var response = UrlFetchApp.fetch(url, {
     method: 'post',
     contentType: 'application/json',
     payload: Utilities.newBlob(body, 'application/json').getBytes(),
@@ -680,6 +692,68 @@ function sendVehicleEventToCarManagement_(payload, eventId, settings) {
     throw new Error('車管理API送信失敗: HTTP ' + status + ' ' + response.getContentText().slice(0, 300));
   }
   return JSON.parse(response.getContentText());
+}
+
+function syncVehicleActiveWatches_(settings) {
+  var result = {ok: true, enabled: settings.vehicleApiEnabled, watch_count: 0, synced: 0, acknowledged: 0};
+  if (!settings.vehicleApiEnabled) {
+    return result;
+  }
+  var activeUrl = settings.vehicleApiUrl.replace(/\/events$/, '/active-watches');
+  var requestId = 'gas-active-watches-' + new Date().getTime();
+  var response = sendVehicleApiRequest_(activeUrl, {}, requestId, settings);
+  var watches = response.watches || [];
+  result.watch_count = watches.length;
+  var properties = PropertiesService.getScriptProperties();
+
+  watches.forEach(function(watch) {
+    if (!watch.thread_ts || !watch.channel_id) {
+      return;
+    }
+    var messages = getThreadMessages(watch.channel_id, watch.thread_ts);
+    var latest = messages.length ? messages[messages.length - 1] : null;
+    var latestTs = latest ? stringValue_(latest.ts) : stringValue_(watch.thread_ts);
+    var propertyKey = 'VEHICLE_WATCH_LAST_TS_' + watch.share_id;
+    var previousTs = stringValue_(properties.getProperty(propertyKey));
+    if (latestTs && latestTs !== previousTs) {
+      var candidate = vehicleStatusCandidateFromMessages_(messages);
+      sendVehicleEventToCarManagement_({
+        type: candidate ? 'status_observed' : 'message_observed',
+        share_id: watch.share_id,
+        channel_id: watch.channel_id,
+        thread_ts: watch.thread_ts,
+        message_ts: latestTs,
+        status_candidate: candidate || undefined,
+        summary: candidate ? 'Slackスレッドから状態候補を検出しました。' : 'Slackスレッドに新しい投稿があります。'
+      }, ['vehicle-watch', watch.share_id, latestTs].join(':'), settings);
+      properties.setProperty(propertyKey, latestTs);
+      result.synced += 1;
+    }
+    if (watch.state === 'closing') {
+      sendVehicleEventToCarManagement_({
+        type: 'close_acknowledged',
+        share_id: watch.share_id,
+        channel_id: watch.channel_id,
+        thread_ts: watch.thread_ts
+      }, ['vehicle-close-ack', watch.share_id, watch.closing_requested_at || latestTs].join(':'), settings);
+      properties.deleteProperty(propertyKey);
+      result.acknowledged += 1;
+    }
+  });
+  return result;
+}
+
+function vehicleStatusCandidateFromMessages_(messages) {
+  for (var i = messages.length - 1; i >= 0; i -= 1) {
+    var text = normalizeUnicode_(stringValue_(messages[i].text));
+    if (/(?:完了|終了|対応済み|作業済み)/.test(text)) {
+      return 'completed';
+    }
+    if (/(?:停止|保留|部品待ち|確認待ち|進められない)/.test(text)) {
+      return 'blocked';
+    }
+  }
+  return '';
 }
 
 function bytesToHex_(bytes) {
@@ -873,6 +947,7 @@ function scheduledMain() {
   var result = {
     started_at: nowIso_(),
     vehicle_linking: null,
+    vehicle_monitoring: null,
     invoice_forwarding: null,
     reaction_forwarding: null,
     error_count: 0
@@ -885,6 +960,13 @@ function scheduledMain() {
   } catch (error) {
     result.error_count += 1;
     saveError('scheduledMain:vehicle_linking', error);
+  }
+
+  try {
+    result.vehicle_monitoring = syncVehicleActiveWatches_(settings);
+  } catch (error) {
+    result.error_count += 1;
+    saveError('scheduledMain:vehicle_monitoring', error);
   }
 
   try {
