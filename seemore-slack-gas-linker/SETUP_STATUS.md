@@ -2,6 +2,14 @@
 
 Last updated: 2026-07-04 18:05 JST
 
+## 2026-07-13 Vehicle management integration
+
+- Added an isolated `message.groups` path for private channel `C0BGT2E75CJ` (`のっちゃリーナ`). Existing invoice and reaction forwarding branches are unchanged.
+- Vehicle API settings are stored separately and enabled only after admin-token validation. The HMAC secret fingerprint matches the XServer vehicle application.
+- Published GAS version 67 to both active Web App deployments.
+- Live signed connectivity test returned `ok=true` and `review_state=pending_review`. Unsigned requests remain rejected by the vehicle API.
+- Only `SEEMORE_SHARE_ID` plus channel/thread identifiers and a fixed safe summary are sent. Slack message text and vehicle/customer financial data are not forwarded.
+
 ## Completed
 
 - Google `clasp` login completed as `tsk.mons@gmail.com`.

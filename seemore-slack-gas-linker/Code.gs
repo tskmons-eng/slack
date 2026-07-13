@@ -42,7 +42,11 @@ var DEFAULT_SETTINGS = {
   INVOICE_REPLY_THREAD_LIMIT: '25',
   INVOICE_FORCE_RESCAN_HOURS: '3',
   INVOICE_MAX_RUNTIME_SECONDS: '300',
-  INVOICE_FORWARD_DRY_RUN: 'false'
+  INVOICE_FORWARD_DRY_RUN: 'false',
+  VEHICLE_API_ENABLED: 'false',
+  VEHICLE_API_URL: 'https://car.seemore-grp.com/api/v1/integrations/slack/events',
+  VEHICLE_API_SECRET: '',
+  VEHICLE_CHANNEL_ID: 'C0BGT2E75CJ'
 };
 
 var SHEET_HEADERS = {
@@ -464,6 +468,30 @@ function webParam_(event, name) {
 
 function doPost(event) {
   var action = event && event.parameter ? event.parameter.action : '';
+  if (action === 'save_vehicle_integration') {
+    requireWebAdmin_(event);
+    return jsonOutput_(saveVehicleIntegrationSettings_(event));
+  }
+  if (action === 'test_vehicle_integration') {
+    requireWebAdmin_(event);
+    var vehicleSettings = getSettings();
+    return jsonOutput_(sendVehicleEventToCarManagement_({
+      type: 'connectivity_test',
+      channel_id: vehicleSettings.vehicleChannelId,
+      summary: 'GAS署名接続テスト'
+    }, 'gas-connectivity-test-' + new Date().getTime(), vehicleSettings));
+  }
+  if (action === 'vehicle_integration_status') {
+    requireWebAdmin_(event);
+    var statusSettings = getSettings();
+    return jsonOutput_({
+      ok: true,
+      enabled: statusSettings.vehicleApiEnabled,
+      channel_id: statusSettings.vehicleChannelId,
+      api_url: statusSettings.vehicleApiUrl,
+      secret_fingerprint: bytesToHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, statusSettings.vehicleApiSecret))
+    });
+  }
   if (action !== 'save_slack_token') {
     var slackEventPayload = parseSlackEventPayload_(event);
     if (slackEventPayload) {
@@ -560,11 +588,105 @@ function handleSlackEventPayload_(event, payload) {
     if (payload.type !== 'event_callback') {
       return jsonOutput_({ok: true, ignored: true, reason: 'unsupported_payload_type'});
     }
-    return jsonOutput_(processSlackReactionEvent_(payload.event || {}, settings));
+    var slackEvent = payload.event || {};
+    if (slackEvent.type === 'message') {
+      return jsonOutput_(processVehicleMessageEvent_(slackEvent, settings, payload.event_id || ''));
+    }
+    return jsonOutput_(processSlackReactionEvent_(slackEvent, settings));
   } catch (error) {
     saveError('handleSlackEventPayload', error);
     return jsonOutput_({ok: false, error: error.message});
   }
+}
+
+function saveVehicleIntegrationSettings_(event) {
+  var apiUrl = stringValue_(event.parameter.VEHICLE_API_URL).trim();
+  var secret = stringValue_(event.parameter.VEHICLE_API_SECRET).trim();
+  var channelId = stringValue_(event.parameter.VEHICLE_CHANNEL_ID).trim();
+  if (!/^https:\/\/car\.seemore-grp\.com\/api\/v1\/integrations\/slack\/events$/.test(apiUrl)) {
+    throw new Error('車管理API URLが不正です。');
+  }
+  if (!/^[a-f0-9]{64}$/i.test(secret)) {
+    throw new Error('車管理API秘密鍵は64桁の16進数で指定してください。');
+  }
+  if (!/^C[A-Z0-9]+$/.test(channelId)) {
+    throw new Error('車管理SlackチャンネルIDが不正です。');
+  }
+  var sheet = createSheets().getSheetByName('settings');
+  upsertSetting_(sheet, 'VEHICLE_API_URL', apiUrl, settingMemo_('VEHICLE_API_URL'));
+  upsertSetting_(sheet, 'VEHICLE_API_SECRET', secret, settingMemo_('VEHICLE_API_SECRET'));
+  upsertSetting_(sheet, 'VEHICLE_CHANNEL_ID', channelId, settingMemo_('VEHICLE_CHANNEL_ID'));
+  upsertSetting_(sheet, 'VEHICLE_API_ENABLED', 'true', settingMemo_('VEHICLE_API_ENABLED'));
+  return {ok: true, enabled: true, channel_id: channelId};
+}
+
+function processVehicleMessageEvent_(event, settings, eventId) {
+  var result = {ok: true, ignored: true, reason: '', vehicle_integration: true};
+  if (!settings.vehicleApiEnabled) {
+    result.reason = 'vehicle_api_disabled';
+    return result;
+  }
+  if (event.channel !== settings.vehicleChannelId) {
+    result.reason = 'vehicle_channel_mismatch';
+    return result;
+  }
+  if (event.bot_id || event.subtype) {
+    result.reason = 'bot_or_subtype_message';
+    return result;
+  }
+  var match = stringValue_(event.text).match(/(?:^|\s)SEEMORE_SHARE_ID[=:]([0-9A-HJKMNP-TV-Z]{26})(?:\s|$)/i);
+  if (!match) {
+    result.reason = 'share_id_not_found';
+    return result;
+  }
+  var shareId = match[1].toUpperCase();
+  var effectiveEventId = stringValue_(eventId).trim() || ['slack', event.channel, event.ts].join(':');
+  sendVehicleEventToCarManagement_({
+    type: 'share_posted',
+    share_id: shareId,
+    channel_id: event.channel,
+    thread_ts: event.thread_ts || event.ts,
+    summary: 'Slackへ共有案件が投稿されました。'
+  }, effectiveEventId, settings);
+  result.ignored = false;
+  result.reason = 'vehicle_event_sent';
+  result.share_id = shareId;
+  return result;
+}
+
+function sendVehicleEventToCarManagement_(payload, eventId, settings) {
+  var body = JSON.stringify(payload).replace(/[^\x20-\x7E]/g, function(character) {
+    return '\\u' + ('0000' + character.charCodeAt(0).toString(16)).slice(-4);
+  });
+  var timestamp = String(Math.floor(Date.now() / 1000));
+  var nonce = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var signatureInput = [timestamp, nonce, eventId, body].join('\n');
+  var signatureBytes = Utilities.computeHmacSha256Signature(signatureInput, settings.vehicleApiSecret);
+  var signature = bytesToHex_(signatureBytes);
+  var response = UrlFetchApp.fetch(settings.vehicleApiUrl, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: Utilities.newBlob(body, 'application/json').getBytes(),
+    headers: {
+      'X-Seemore-Timestamp': timestamp,
+      'X-Seemore-Nonce': nonce,
+      'X-Seemore-Event-Id': eventId,
+      'X-Seemore-Signature': signature
+    },
+    muteHttpExceptions: true
+  });
+  var status = response.getResponseCode();
+  if (status < 200 || status >= 300) {
+    throw new Error('車管理API送信失敗: HTTP ' + status + ' ' + response.getContentText().slice(0, 300));
+  }
+  return JSON.parse(response.getContentText());
+}
+
+function bytesToHex_(bytes) {
+  return bytes.map(function(value) {
+    var unsigned = value < 0 ? value + 256 : value;
+    return ('0' + unsigned.toString(16)).slice(-2);
+  }).join('');
 }
 
 function verifySlackEventRequest_(event, payload, settings) {
@@ -1281,7 +1403,11 @@ function getSettings() {
     invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 25),
     invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 3),
     invoiceMaxRuntimeSeconds: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_MAX_RUNTIME_SECONDS'), 300),
-    invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN'))
+    invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN')),
+    vehicleApiEnabled: parseBoolean_(settingOrDefault_(raw, 'VEHICLE_API_ENABLED')),
+    vehicleApiUrl: stringValue_(settingOrDefault_(raw, 'VEHICLE_API_URL')).trim(),
+    vehicleApiSecret: stringValue_(settingOrDefault_(raw, 'VEHICLE_API_SECRET')).trim(),
+    vehicleChannelId: stringValue_(settingOrDefault_(raw, 'VEHICLE_CHANNEL_ID')).trim()
   };
 }
 
@@ -4949,7 +5075,11 @@ function settingMemo_(key) {
     INVOICE_HISTORY_LIMIT: '請求書転送で1回に確認する投稿数です。制限対策のため必要以上に増やさないでください。',
     INVOICE_REPLY_THREAD_LIMIT: '請求書転送で返信を確認するrootスレッド数の上限です。',
     INVOICE_FORCE_RESCAN_HOURS: '新着がないチャンネルでもこの時間を過ぎたら再スキャンし、後付けリアクションを拾います。',
-    INVOICE_FORWARD_DRY_RUN: 'trueなら請求書転送もSlackへ投稿せず候補数だけ確認します。'
+    INVOICE_FORWARD_DRY_RUN: 'trueなら請求書転送もSlackへ投稿せず候補数だけ確認します。',
+    VEHICLE_API_ENABLED: 'trueの場合だけ車管理専用のSlackイベント送信を有効にします。',
+    VEHICLE_API_URL: '車管理の署名API URLです。',
+    VEHICLE_API_SECRET: '車管理とGASだけで共有するHMAC秘密鍵です。画面やSlackへ表示しません。',
+    VEHICLE_CHANNEL_ID: '車管理専用SlackチャンネルIDです。名前ではなくIDで固定します。'
   };
   return memos[key] || '';
 }
