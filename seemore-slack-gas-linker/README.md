@@ -194,7 +194,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 `setup()` は以下を自動で行います。
 
 - スプレッドシート `SEEMORE_Slack車案件リンク管理` の作成
-- `settings`、`linked_threads`、`run_logs`、`errors`、`dry_run_logs`、`invoice_reaction_posts`、`reaction_forward_rules`、`reaction_forward_posts` シートの作成
+- `settings`、`linked_threads`、`run_logs`、`scheduled_run_logs`、`errors`、`dry_run_logs`、請求書・リアクション転送用シートの作成
 - ヘッダー行の作成
 - `settings` 初期値の作成
 - `reaction_forward_rules` に無効状態の `assistant_articles` テンプレート行を作成
@@ -257,6 +257,8 @@ Apps Script上で以下を実行できます。
   - Botが参加しているチャンネル一覧と、現在の請求書ロケット監視候補を確認します。
 - `?action=diagnostics`
   - Slack認証、参加チャンネル、請求書設定、アシスタント転送ルール、直近エラー、直近リアクションイベントを確認します。トークンや投稿本文は返しません。
+- `?action=scheduled_run&confirm=RUN_SCHEDULED_MAIN`
+  - 毎時処理を手動実行します。請求書とリアクションの取りこぼし確認を先に行い、車両監視と車案件リンク確認を残り時間で実行します。
 - `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
   - `channel_name` を指定すると、対象チャンネルだけを診断します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
@@ -292,19 +294,19 @@ Apps Script上で以下を実行できます。
 - 返信側の `rocket` で、root投稿が履歴取得範囲や `INVOICE_REPLY_THREAD_LIMIT` の外にある場合。
 - Slack APIの一時エラー、レート制限、GAS実行時間上限で途中チャンネルが処理できなかった場合。
 
-対策として、現在は履歴ページング、30日lookback、3時間ごとの強制再スキャン、チャンネル別状態記録、GAS実行時間の手前での途中停止、Slack 429時の `Retry-After` 待機、請求書転送投稿時のScript Lock、投稿先チャンネルの元URL重複確認を入れています。途中停止した場合は、最終確認時刻が古いチャンネルから次回実行で優先します。完全に即時化し、古い返信への後付けスタンプまで拾いやすくするにはSlack Events APIの `reaction_added` を有効化してください。
+対策として、現在は履歴ページング、30日lookback、3時間ごとの強制再スキャン、チャンネル別状態記録、GAS実行時間の手前での途中停止、Slack 429時の `Retry-After` 待機、請求書転送投稿時のScript Lock、投稿先チャンネルの元URL重複確認を入れています。毎時処理は請求書、汎用リアクション、車両監視、車案件リンクの順で実行し、全体を5分で打ち切ります。途中停止した場合は、最終確認時刻が古いチャンネルから次回実行で優先します。即時転送はSlack Events APIの `reaction_added` が担当し、毎時処理は取りこぼし回収として動きます。
 
 ## GAS/Slack制限の見方
 
 2026-06-14に公式ドキュメントで確認した目安です。実際の上限はGoogle/Slack側で変更されることがあります。
 
-- Apps Scriptは1実行6分が上限です。`INVOICE_MAX_RUNTIME_SECONDS=300` でもWeb実行が5分付近で切れることがあるため、実際の走査は120秒の余白を残し、履歴ページ・root投稿・返信の途中でも停止できるようにしています。
+- Apps Scriptは1実行6分が上限です。`scheduledMain()` は全体5分、請求書確認150秒、汎用リアクション45秒、車両監視45秒を上限とし、残り時間だけ車案件リンクを最大20スレッド/チャンネルで確認します。
 - Apps ScriptのURL FetchはGoogle個人アカウントで1日20,000回、Google Workspaceで1日100,000回が目安です。
 - Apps Scriptのトリガー実行時間合計はGoogle個人アカウントで1日90分、Google Workspaceで1日6時間が目安です。
 - Slack Web APIはメソッドごと、ワークスペースごとに分単位のレート制限があり、超過時はHTTP 429と `Retry-After` が返ります。
 - Slack Events APIはワークスペース/アプリあたり1時間30,000イベントが目安です。6チャンネル・新規投稿少なめの現在想定では問題になりにくいです。
 
-現在の約6チャンネル運用では、1時間ごとの軽い確認だけならURL Fetch量はかなり余裕があります。リスクはURL Fetch日次上限より、返信が多いチャンネルで1回6分に近づくことです。そのため、設定値を増やす場合は `errors` と `invoice_channel_scan_state` の `last_error`、`history_pages_scanned`、`messages_checked`、`reply_messages_checked` を見ながら調整します。
+現在の約6チャンネル運用では、1時間ごとの軽い確認だけならURL Fetch量はかなり余裕があります。Slack API呼び出しはScript PropertiesのBot Tokenを直接使い、呼び出しごとの管理シート全初期化は行いません。設定値を増やす場合は `scheduled_run_logs`、`errors`、`invoice_channel_scan_state` を見ながら調整します。
 
 重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
 
@@ -326,7 +328,7 @@ Apps Script上で以下を実行できます。
 
 `dry_run_logs` に問題がない場合だけ、`settings` シートの `DRY_RUN` を `false` に変更します。
 
-以降、1時間ごとの `scheduledMain()` 実行で車案件の紐付けと請求書転送を処理します。
+以降、1時間ごとの `scheduledMain()` 実行で請求書・汎用リアクションの取りこぼし確認、車両監視、車案件の紐付けを処理します。
 
 車案件だけを手動で本番実行する場合は `runProduction()` を実行します。`runProduction()` は `DRY_RUN=false` になっていない場合は停止します。
 
@@ -372,6 +374,24 @@ posted_count
 duplicate_skipped_count
 expired_skipped_count
 error_count
+memo
+```
+
+`scheduled_run_logs`:
+
+```text
+started_at
+finished_at
+elapsed_seconds
+completed
+deadline_reached
+error_count
+invoice_posted_count
+invoice_deferred_count
+reaction_posted_count
+vehicle_watch_synced_count
+vehicle_link_posted_count
+vehicle_link_deadline_reached
 memo
 ```
 
@@ -554,6 +574,8 @@ Apps Script左メニューの `トリガー` で、`scheduledMain` が1時間ご
 作り直したい場合は `createDailyTrigger()` を実行します。`MAIN_TRIGGER_INTERVAL_HOURS=1` が入っていれば、既存の `main()` / `scheduledMain()` トリガーを消してから毎時トリガーを作り直します。
 
 Apps Scriptの時間主導型トリガーは分単位で厳密には動きません。毎時のどこかで動く想定です。
+
+実行が正常終了したかは `scheduled_run_logs` の `completed=true` と `elapsed_seconds` で確認します。`deadline_reached=true` は6分タイムアウトではなく、安全上限で途中停止して次回へ回した状態です。
 
 ## エラー確認
 

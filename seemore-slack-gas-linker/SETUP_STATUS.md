@@ -1,6 +1,20 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-04 18:05 JST
+Last updated: 2026-07-27 19:23 JST
+
+## 2026-07-27 Scheduled runtime recovery
+
+- Confirmed that this Slack automation uses Google Apps Script, Google Sheets, and Slack Web API. It does not depend on the stopped Google Cloud Run/billing workload, so ownership remains with `tsk.mons@gmail.com`; no Google account migration was performed.
+- Apps Script execution history showed `scheduledMain` timing out at about 360 seconds on every hourly run. The Slack Events Web App still responded, so direct `reaction_added` handling remained available while scheduled recovery was unhealthy.
+- Root cause was the unbounded legacy vehicle-thread scan running before invoice/reaction recovery, compounded by full sheet setup work during each Slack API request.
+- Scheduled processing now runs invoice recovery first, then generic reaction recovery, vehicle watch sync, and finally a bounded vehicle-thread scan.
+- The whole scheduled run has a 300-second deadline. Invoice recovery gets up to 150 seconds, generic reaction recovery and vehicle watch sync get 45 seconds each, and the vehicle-thread scan uses the remaining time with at most 20 roots per configured channel.
+- Slack API calls now read the Bot Token from Script Properties and no longer initialize and resize every management sheet per request.
+- Added protected Web action `?action=scheduled_run&confirm=RUN_SCHEDULED_MAIN` and `scheduled_run_logs` audit sheet.
+- Published GAS version 71 to both active Web App deployments.
+- A production manual run completed in 41 seconds with `error_count=0` and no deadline stop. It recovered 3 previously unprocessed invoice rockets and 1 previously unprocessed assistant reaction; 2 invoice and 4 assistant records were correctly skipped as duplicates.
+- The next hourly trigger started at 2026-07-27 19:20:35 JST and completed normally in 28.577 seconds. Its audit row recorded `completed=true`, `deadline_reached=false`, and `error_count=0`.
+- Production status at 2026-07-27 19:22:57 JST confirmed one `scheduledMain` trigger, a valid `scheduled_run_logs` header, invoice forwarding enabled, and one enabled generic reaction rule.
 
 ## 2026-07-13 Vehicle management integration
 
