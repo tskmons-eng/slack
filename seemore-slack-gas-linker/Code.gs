@@ -14,6 +14,7 @@ var SCHEDULED_VEHICLE_LINK_MAX_THREADS_PER_CHANNEL = 20;
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var INVOICE_RUNTIME_SAFETY_SECONDS = 120;
 var INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_SOURCE_CHANNELS';
+var INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_FORWARD_ROUTE';
 var REACTION_FORWARD_CONFIRM_TOKEN = 'RUN_REACTION_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
 var REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_REACTION_FORWARD_RULE';
@@ -39,14 +40,14 @@ var DEFAULT_SETTINGS = {
   MAIN_TRIGGER_INTERVAL_HOURS: '1',
   INVOICE_FORWARD_ENABLED: 'true',
   INVOICE_SOURCE_CHANNEL_NAME: '依頼＿ALL',
-  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_引き継ぎ,依頼_車案件,依頼＿小売取引',
+  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_車案件,依頼＿小売取引',
   INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
   INVOICE_REACTION_NAME: 'rocket',
   INVOICE_LOOKBACK_DAYS: '30',
   INVOICE_HISTORY_LIMIT: '100',
   INVOICE_HISTORY_PAGE_LIMIT: '3',
   INVOICE_REPLY_THREAD_LIMIT: '25',
-  INVOICE_FORCE_RESCAN_HOURS: '3',
+  INVOICE_FORCE_RESCAN_HOURS: '1',
   INVOICE_MAX_RUNTIME_SECONDS: '300',
   INVOICE_FORWARD_DRY_RUN: 'false',
   VEHICLE_API_ENABLED: 'false',
@@ -125,6 +126,12 @@ var SHEET_HEADERS = {
     'posted_text',
     'dry_run'
   ],
+  invoice_forward_routes: [
+    'enabled',
+    'route_name',
+    'reaction_name',
+    'target_channel_name'
+  ],
   invoice_channel_scan_state: [
     'source_channel_name',
     'source_channel_id',
@@ -142,7 +149,8 @@ var SHEET_HEADERS = {
     'skipped_unchanged',
     'last_error',
     'dry_run',
-    'history_pages_scanned'
+    'history_pages_scanned',
+    'route_signature'
   ],
   reaction_forward_rules: [
     'enabled',
@@ -189,11 +197,13 @@ var SHEET_HEADERS = {
     'planned_count',
     'duplicate_skipped_count',
     'error_count',
-    'last_error'
+    'last_error',
+    'matching_invoice_route_count'
   ]
 };
 
 var CHANNEL_CACHE = null;
+var MANAGED_SHEET_SCHEMA_READY = {};
 
 function setup() {
   var spreadsheet = createSheets();
@@ -288,8 +298,17 @@ function doGet(event) {
   if (action === 'invoice_dryrun') {
     var invoiceDryRunLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
     var invoiceDryRunHistoryLimit = parsePositiveInteger_(event.parameter.history_limit, 0);
+    var invoiceDryRunRouteName = stringValue_(event.parameter.route_name || '');
     return jsonOutput_(runJsonAction_(function() {
-      return processInvoiceReactions_(true, invoiceDryRunLookbackDays || null, invoiceDryRunHistoryLimit || null);
+      return processInvoiceReactions_(
+        true,
+        invoiceDryRunLookbackDays || null,
+        invoiceDryRunHistoryLimit || null,
+        null,
+        true,
+        null,
+        invoiceDryRunRouteName ? [invoiceDryRunRouteName] : null
+      );
     }));
   }
 
@@ -327,15 +346,34 @@ function doGet(event) {
     });
   }
 
+  if (action === 'set_invoice_forward_route') {
+    var invoiceForwardRouteConfirm = stringValue_(event.parameter.confirm || '');
+    return runHtmlJsonAction_(function() {
+      if (invoiceForwardRouteConfirm !== INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN) {
+        throw new Error('invoice_forward_routes update requires confirm=' + INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN);
+      }
+      return upsertInvoiceForwardRouteFromWeb_(event.parameter);
+    });
+  }
+
   if (action === 'invoice_run') {
     var invoiceRunLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
     var invoiceRunHistoryLimit = parsePositiveInteger_(event.parameter.history_limit, 0);
+    var invoiceRunRouteName = stringValue_(event.parameter.route_name || '');
     var invoiceConfirm = stringValue_(event.parameter.confirm || '');
     return jsonOutput_(runJsonAction_(function() {
       if (invoiceConfirm !== INVOICE_FORWARD_CONFIRM_TOKEN) {
         throw new Error('請求書転送の手動本番実行には confirm=' + INVOICE_FORWARD_CONFIRM_TOKEN + ' が必要です。');
       }
-      return processInvoiceReactions_(false, invoiceRunLookbackDays || null, invoiceRunHistoryLimit || null);
+      return processInvoiceReactions_(
+        false,
+        invoiceRunLookbackDays || null,
+        invoiceRunHistoryLimit || null,
+        null,
+        null,
+        null,
+        invoiceRunRouteName ? [invoiceRunRouteName] : null
+      );
     }));
   }
 
@@ -343,6 +381,7 @@ function doGet(event) {
     var invoiceRunChannelName = stringValue_(event.parameter.channel_name || '');
     var invoiceRunChannelLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
     var invoiceRunChannelHistoryLimit = parsePositiveInteger_(event.parameter.history_limit, 0);
+    var invoiceRunChannelRouteName = stringValue_(event.parameter.route_name || '');
     var invoiceRunChannelConfirm = stringValue_(event.parameter.confirm || '');
     return jsonOutput_(runJsonAction_(function() {
       if (invoiceRunChannelConfirm !== INVOICE_FORWARD_CONFIRM_TOKEN) {
@@ -356,7 +395,9 @@ function doGet(event) {
         invoiceRunChannelLookbackDays || null,
         invoiceRunChannelHistoryLimit || null,
         [invoiceRunChannelName],
-        true
+        true,
+        null,
+        invoiceRunChannelRouteName ? [invoiceRunChannelRouteName] : null
       );
     }));
   }
@@ -365,6 +406,7 @@ function doGet(event) {
     var invoiceRunMessageChannelName = stringValue_(event.parameter.channel_name || '');
     var invoiceRunMessageTs = stringValue_(event.parameter.message_ts || '');
     var invoiceRunMessageThreadTs = stringValue_(event.parameter.thread_ts || '');
+    var invoiceRunMessageRouteName = stringValue_(event.parameter.route_name || '');
     var invoiceRunMessageConfirm = stringValue_(event.parameter.confirm || '');
     return jsonOutput_(runJsonAction_(function() {
       if (invoiceRunMessageConfirm !== INVOICE_FORWARD_CONFIRM_TOKEN) {
@@ -376,7 +418,8 @@ function doGet(event) {
       return processInvoiceMessageByTs_(
         invoiceRunMessageChannelName,
         invoiceRunMessageTs,
-        invoiceRunMessageThreadTs || invoiceRunMessageTs
+        invoiceRunMessageThreadTs || invoiceRunMessageTs,
+        invoiceRunMessageRouteName || 'invoice_rocket'
       );
     }));
   }
@@ -843,6 +886,7 @@ function processSlackReactionEvent_(event, settings) {
     source_channel_name: '',
     source_message_ts: '',
     matching_rule_count: 0,
+    matching_invoice_route_count: 0,
     should_check_invoice: false,
     invoice_source_allowed: false,
     candidates_found: 0,
@@ -887,20 +931,47 @@ function processSlackReactionEvent_(event, settings) {
   stats.source_channel_name = sourceChannel.name || '';
 
   var matchingReactionRules = findMatchingReactionForwardRules_(reactionName, sourceChannel);
-  var shouldCheckInvoice = reactionName === settings.invoiceReactionName && settings.invoiceForwardEnabled;
+  var matchingInvoiceRoutes = findMatchingInvoiceForwardRoutes_(settings, reactionName);
+  var shouldCheckInvoice = matchingInvoiceRoutes.length > 0;
   stats.matching_rule_count = matchingReactionRules.length;
+  stats.matching_invoice_route_count = matchingInvoiceRoutes.length;
   stats.should_check_invoice = shouldCheckInvoice;
-  var invoiceTargetChannel = null;
+  var invoiceRouteResolution = {
+    contexts: [],
+    unresolved: []
+  };
   var invoiceSourceAllowed = false;
   if (shouldCheckInvoice) {
-    invoiceTargetChannel = getChannelByName_(settings.invoiceTargetChannelName);
-    invoiceSourceAllowed = isInvoiceSourceChannelAllowed_(settings, sourceChannel, invoiceTargetChannel);
+    invoiceRouteResolution = resolveInvoiceForwardRouteContexts_(matchingInvoiceRoutes);
+    invoiceSourceAllowed = isInvoiceSourceChannelAllowed_(
+      settings,
+      sourceChannel,
+      invoiceRouteResolution.contexts.map(function(context) {
+        return context.targetChannel;
+      })
+    );
   }
   stats.invoice_source_allowed = invoiceSourceAllowed;
 
-  if (!matchingReactionRules.length && (!shouldCheckInvoice || !invoiceSourceAllowed)) {
+  if (shouldCheckInvoice && invoiceSourceAllowed) {
+    stats.invoice_forwarding = makeInvoiceEventStats_(reactionName);
+    recordUnresolvedInvoiceRoutes_(
+      stats.invoice_forwarding,
+      matchingInvoiceRoutes,
+      invoiceRouteResolution.unresolved,
+      'processSlackReactionEvent'
+    );
+  }
+
+  var hasRunnableInvoiceRoute = invoiceSourceAllowed && invoiceRouteResolution.contexts.length > 0;
+  if (!matchingReactionRules.length && !hasRunnableInvoiceRoute) {
     stats.ignored = true;
-    stats.reason = shouldCheckInvoice ? 'source_channel_not_monitored' : 'no_matching_reaction_rule';
+    stats.reason = shouldCheckInvoice
+      ? (invoiceSourceAllowed ? 'invoice_route_target_unresolved' : 'source_channel_not_monitored')
+      : 'no_matching_reaction_rule';
+    if (stats.invoice_forwarding) {
+      mergeInvoiceEventStats_(stats, stats.invoice_forwarding);
+    }
     return finishSlackReactionEvent_(stats);
   }
 
@@ -915,8 +986,16 @@ function processSlackReactionEvent_(event, settings) {
   }
 
   if (shouldCheckInvoice && invoiceSourceAllowed) {
-    stats.invoice_forwarding = makeInvoiceEventStats_(reactionName);
-    processInvoiceMessageForForward_(message, sourceChannel, invoiceTargetChannel, settings, stats.invoice_forwarding, false);
+    if (hasRunnableInvoiceRoute) {
+      processInvoiceMessageForRoutes_(
+        message,
+        sourceChannel,
+        invoiceRouteResolution.contexts,
+        settings,
+        stats.invoice_forwarding,
+        false
+      );
+    }
     mergeInvoiceEventStats_(stats, stats.invoice_forwarding);
   }
 
@@ -941,7 +1020,8 @@ function makeInvoiceEventStats_(reactionName) {
     duplicate_skipped_count: 0,
     link_only_count: 0,
     no_pdf_skipped_count: 0,
-    error_count: 0
+    error_count: 0,
+    route_results: []
   };
 }
 
@@ -957,17 +1037,24 @@ function mergeInvoiceEventStats_(target, source) {
   ].forEach(function(key) {
     target[key] = (target[key] || 0) + (source[key] || 0);
   });
+  mergeInvoiceRouteResults_(target, source.route_results);
 }
 
-function isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannel) {
-  if (targetChannel && sourceChannel.id === targetChannel.id) {
+function isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannels) {
+  var targets = Array.isArray(targetChannels)
+    ? targetChannels
+    : (targetChannels ? [targetChannels] : []);
+  if (targets.some(function(targetChannel) {
+    return targetChannel && sourceChannel.id === targetChannel.id;
+  })) {
     return false;
   }
   if (settings.invoiceSourceAllJoinedChannels) {
     return true;
   }
-  return resolveInvoiceSourceChannels_(settings, targetChannel).some(function(channel) {
-    return channel.id === sourceChannel.id;
+  return (settings.invoiceSourceChannelNames || []).some(function(name) {
+    return stringValue_(name).trim() === stringValue_(sourceChannel.id) ||
+      channelNameMatches_(sourceChannel, name);
   });
 }
 
@@ -1079,6 +1166,14 @@ function scheduledMain() {
     saveError('scheduledMain:vehicle_linking', error);
   }
 
+  [
+    result.invoice_forwarding,
+    result.reaction_forwarding,
+    result.vehicle_monitoring,
+    result.vehicle_linking
+  ].forEach(function(phaseResult) {
+    result.error_count += scheduledPhaseErrorCount_(phaseResult);
+  });
   result.finished_at = nowIso_();
   result.elapsed_seconds = Math.round((Date.now() - startedAtMs) / 1000);
   result.deadline_reached = runtimeDeadlineReached_(hardDeadlineMs) ||
@@ -1119,6 +1214,11 @@ function scheduledSkippedResult_(reason) {
     reason: reason || 'runtime_budget_unavailable',
     deadline_reached: true
   };
+}
+
+function scheduledPhaseErrorCount_(phaseResult) {
+  var parsed = parseInt(phaseResult && phaseResult.error_count, 10);
+  return parsed > 0 ? parsed : 0;
 }
 
 function runDryRun() {
@@ -1187,7 +1287,10 @@ function getSetupStatus_() {
     main_daily_trigger_found: false,
     main_trigger_count: 0,
     reaction_forward_rule_count: 0,
-    reaction_forward_enabled_rule_count: 0
+    reaction_forward_enabled_rule_count: 0,
+    invoice_forward_route_count: 0,
+    invoice_forward_enabled_route_count: 0,
+    invoice_forward_routes: []
   };
 
   var spreadsheet = findExistingSpreadsheet_();
@@ -1238,6 +1341,23 @@ function getSetupStatus_() {
         return rule.enabled;
       }).length;
     }
+
+    var invoiceRoutesSheet = spreadsheet.getSheetByName('invoice_forward_routes');
+    if (invoiceRoutesSheet) {
+      var invoiceRoutes = readInvoiceForwardRoutesFromValues_(invoiceRoutesSheet.getDataRange().getValues());
+      status.invoice_forward_route_count = invoiceRoutes.length;
+      status.invoice_forward_enabled_route_count = invoiceRoutes.filter(invoiceForwardRouteIsRunnable_).length;
+      status.invoice_forward_routes = invoiceRoutes.map(function(route) {
+        return {
+          enabled: route.enabled,
+          route_name: route.routeName,
+          reaction_name: route.reactionName,
+          target_channel_name: route.targetChannelName,
+          row_number: route.rowNumber || '',
+          validation_error: route.validationError || ''
+        };
+      });
+    }
   }
 
   var triggers = ScriptApp.getProjectTriggers().filter(function(trigger) {
@@ -1266,6 +1386,11 @@ function getOperationalDiagnostics_() {
   ].filter(function(name, index, names) {
     return name && names.indexOf(name) === index;
   });
+  (joined.target_channels || []).forEach(function(channel) {
+    if (channel.name && targetChannelNames.indexOf(channel.name) === -1) {
+      targetChannelNames.push(channel.name);
+    }
+  });
   var channels = joined.channels || [];
   var pickedChannels = channels.filter(function(channel) {
     return targetChannelNames.some(function(name) {
@@ -1284,11 +1409,18 @@ function getOperationalDiagnostics_() {
       invoice_source_channel_names: status.settings.invoice_source_channel_names,
       invoice_target_channel_name: status.settings.invoice_target_channel_name,
       invoice_reaction_name: status.settings.invoice_reaction_name,
+      invoice_forward_route_count: status.invoice_forward_route_count,
+      invoice_forward_enabled_route_count: status.invoice_forward_enabled_route_count,
       reaction_forward_rule_count: status.reaction_forward_rule_count,
       reaction_forward_enabled_rule_count: status.reaction_forward_enabled_rule_count
     },
     joined_channel_count: joined.joined_count,
     invoice_source_count: joined.invoice_source_count,
+    unresolved_sources: joined.unresolved_sources,
+    unresolved_target_routes: joined.unresolved_target_routes,
+    invoice_forward_routes: joined.invoice_forward_routes,
+    invalid_invoice_forward_routes: joined.invalid_invoice_forward_routes,
+    target_channels: joined.target_channels,
     picked_channels: pickedChannels.map(function(channel) {
       return {
         name: channel.name,
@@ -1454,6 +1586,7 @@ function createSheets() {
   var settingsSheet = spreadsheet.getSheetByName('settings');
   seedDefaultSettings_(settingsSheet);
   upgradeInvoiceSafetySettings_(settingsSheet);
+  seedInvoiceForwardRoutes_(spreadsheet.getSheetByName('invoice_forward_routes'), settingsSheet);
   seedReactionForwardRuleTemplate_(spreadsheet.getSheetByName('reaction_forward_rules'));
   ensureGeneratedSecretSetting_(settingsSheet, 'SLACK_EVENT_REQUEST_TOKEN', 'slackevt_');
   ensureGeneratedSecretSetting_(settingsSheet, 'WEB_ADMIN_TOKEN', 'admin_');
@@ -1502,29 +1635,37 @@ function updateMainTriggerHours_(hoursValue, confirm) {
 
 function updateInvoiceSourceChannels_(channelNamesValue, confirm) {
   if (confirm !== INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN) {
-    throw new Error('請求書ロケット監視元の更新には confirm=' + INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN + ' が必要です。');
+    throw new Error('依頼リアクション監視元の更新には confirm=' + INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN + ' が必要です。');
   }
 
   var names = parseCommaSeparatedSetting_(channelNamesValue);
   if (!names.length) {
-    throw new Error('請求書ロケット監視元のchannel_namesを1件以上指定してください。');
+    throw new Error('依頼リアクション監視元のchannel_namesを1件以上指定してください。');
   }
   if (names.some(function(name) {
     var normalized = normalizeUnicode_(name).trim().toLowerCase();
     return normalized === '*' || normalized === 'all' || normalized === 'all_joined';
   })) {
-    throw new Error('請求書ロケット監視元は明示的なチャンネル名で指定してください。');
+    throw new Error('依頼リアクション監視元は明示的なチャンネル名で指定してください。');
   }
 
   var settings = getSettings();
-  var targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
+  var routeResolution = resolveInvoiceForwardRouteContexts_(selectInvoiceForwardRoutes_(settings));
+  if (routeResolution.unresolved.length) {
+    throw new Error(routeResolution.unresolved[0].error);
+  }
+  var targetChannels = routeResolution.contexts.map(function(context) {
+    return context.targetChannel;
+  });
   var sourceChannels = names.map(function(name) {
     var channel = getChannelByName_(name);
     if (channel.is_member === false) {
       throw new Error('Botが参加していないチャンネルです: ' + name);
     }
-    if (channel.id === targetChannel.id) {
-      throw new Error('請求書転送先は監視元にできません: ' + name);
+    if (targetChannels.some(function(targetChannel) {
+      return channel.id === targetChannel.id;
+    })) {
+      throw new Error('依頼リアクションの転送先は監視元にできません: ' + name);
     }
     return channel;
   });
@@ -1541,7 +1682,10 @@ function updateInvoiceSourceChannels_(channelNamesValue, confirm) {
   return {
     updated_invoice_source_channel_names: names.join(','),
     source_channel_count: sourceChannels.length,
-    target_channel_name: targetChannel.name
+    target_channel_name: settings.invoiceTargetChannelName,
+    target_channel_names: targetChannels.map(function(channel) {
+      return channel.name;
+    }).join(',')
   };
 }
 
@@ -1615,7 +1759,7 @@ function getSettings() {
     invoiceHistoryLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_LIMIT'), 100),
     invoiceHistoryPageLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_HISTORY_PAGE_LIMIT'), 3),
     invoiceReplyThreadLimit: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_REPLY_THREAD_LIMIT'), 25),
-    invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 3),
+    invoiceForceRescanHours: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_FORCE_RESCAN_HOURS'), 1),
     invoiceMaxRuntimeSeconds: parsePositiveInteger_(settingOrDefault_(raw, 'INVOICE_MAX_RUNTIME_SECONDS'), 300),
     invoiceForwardDryRun: parseBoolean_(settingOrDefault_(raw, 'INVOICE_FORWARD_DRY_RUN')),
     vehicleApiEnabled: parseBoolean_(settingOrDefault_(raw, 'VEHICLE_API_ENABLED')),
@@ -2029,7 +2173,7 @@ function isSlackMessageNotFoundError_(error) {
   return /message_not_found/.test(detail);
 }
 
-function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyLimitOverride, sourceChannelNamesOverride, forceRescanOverride, runtimeDeadlineMs) {
+function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyLimitOverride, sourceChannelNamesOverride, forceRescanOverride, runtimeDeadlineMs, routeNamesOverride) {
   var startedAt = nowIso_();
   var startedAtMs = Date.now();
   var stats = {
@@ -2041,9 +2185,19 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     source_channel_id: '',
     source_channel_ids: '',
     source_channel_count: 0,
+    configured_source_count: 0,
+    unresolved_source_count: 0,
+    unresolved_sources: [],
     target_channel_name: '',
     target_channel_id: '',
     reaction_name: '',
+    enabled_route_count: 0,
+    selected_route_count: 0,
+    route_names: '',
+    requested_route_names: '',
+    route_signature: '',
+    unresolved_route_count: 0,
+    unresolved_routes: [],
     lookback_days: 0,
     history_limit: 0,
     history_page_limit: 0,
@@ -2071,14 +2225,13 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     error_count: 0,
     history_next_cursor_found: false,
     message_samples: [],
-    channel_results: []
+    channel_results: [],
+    route_results: []
   };
 
   try {
     var settings = getSettings();
     stats.enabled = Boolean(settings.invoiceForwardEnabled);
-    stats.target_channel_name = settings.invoiceTargetChannelName;
-    stats.reaction_name = settings.invoiceReactionName;
     stats.lookback_days = lookbackDaysOverride || settings.invoiceLookbackDays;
     stats.history_limit = Math.min(historyLimitOverride || settings.invoiceHistoryLimit, 200);
     stats.history_page_limit = settings.invoiceHistoryPageLimit;
@@ -2094,9 +2247,61 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
       throw new Error('SLACK_BOT_TOKENが未設定です。settingsシートへBot Tokenを入力してください。');
     }
 
-    var targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
-    stats.target_channel_id = targetChannel.id;
-    var sourceChannels = resolveInvoiceSourceChannels_(settings, targetChannel);
+    var allRoutes = selectInvoiceForwardRoutes_(settings);
+    var selectedRoutes = selectInvoiceForwardRoutes_(settings, routeNamesOverride);
+    stats.enabled_route_count = allRoutes.length;
+    stats.selected_route_count = selectedRoutes.length;
+    stats.route_names = selectedRoutes.map(function(route) {
+      return route.routeName;
+    }).join(',');
+    stats.requested_route_names = (routeNamesOverride || []).join(',');
+    stats.reaction_name = selectedRoutes.map(function(route) {
+      return route.reactionName;
+    }).join(',');
+
+    var routeResolution = resolveInvoiceForwardRouteContexts_(selectedRoutes);
+    var routeContexts = routeResolution.contexts;
+    stats.route_signature = invoiceForwardRouteSignature_(routeContexts.map(function(context) {
+      return context.route;
+    }));
+    stats.unresolved_routes = routeResolution.unresolved;
+    stats.unresolved_route_count = routeResolution.unresolved.length;
+    routeContexts.forEach(function(context) {
+      ensureInvoiceRouteStats_(stats, context.route, context.targetChannel);
+    });
+    recordUnresolvedInvoiceRoutes_(
+      stats,
+      selectedRoutes,
+      routeResolution.unresolved,
+      'processInvoiceReactions'
+    );
+    stats.target_channel_name = routeContexts.map(function(context) {
+      return context.targetChannel.name;
+    }).join(',');
+    stats.target_channel_id = routeContexts.map(function(context) {
+      return context.targetChannel.id;
+    }).join(',');
+    if (!routeContexts.length) {
+      return stats;
+    }
+
+    var targetChannels = routeContexts.map(function(context) {
+      return context.targetChannel;
+    });
+    var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels);
+    var sourceChannels = sourceResolution.channels;
+    stats.configured_source_count = settings.invoiceSourceAllJoinedChannels
+      ? sourceChannels.length
+      : settings.invoiceSourceChannelNames.length;
+    stats.unresolved_sources = sourceResolution.unresolved;
+    stats.unresolved_source_count = sourceResolution.unresolved.length;
+    sourceResolution.unresolved.forEach(function(unresolvedSource) {
+      stats.error_count += 1;
+      saveError(
+        'processInvoiceReactions:source:' + unresolvedSource.configured_name,
+        new Error(unresolvedSource.reason)
+      );
+    });
     var requestedSourceChannelNames = (sourceChannelNamesOverride || []).filter(function(name) {
       return stringValue_(name).trim() !== '';
     });
@@ -2128,7 +2333,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
       try {
         processInvoiceChannelReactions_(
           sourceChannel,
-          targetChannel,
+          routeContexts,
           settings,
           channelStats,
           dryRunOverride,
@@ -2138,7 +2343,8 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
           stateByChannelId[sourceChannel.id] || null,
           startedAtMs,
           forceRescanOverride,
-          runtimeDeadlineMs
+          runtimeDeadlineMs,
+          stats.route_signature
         );
       } catch (error) {
         channelStats.error_count += 1;
@@ -2186,21 +2392,27 @@ function filterInvoiceSourceChannels_(channels, requestedNames) {
         return channelNameMatches_({name: matchedName}, name);
       });
     });
-    throw new Error('請求書ロケット監視対象のチャンネルが見つかりません: ' + unknown.join(','));
+    throw new Error('依頼リアクション監視対象のチャンネルが見つかりません: ' + unknown.join(','));
   }
   return matched;
 }
 
-function processInvoiceMessageByTs_(sourceChannelName, sourceMessageTs, sourceThreadTs) {
+function processInvoiceMessageByTs_(sourceChannelName, sourceMessageTs, sourceThreadTs, routeName) {
   var settings = getSettings();
   if (!settings.invoiceForwardEnabled) {
-    throw new Error('請求書ロケット転送が無効です。');
+    throw new Error('依頼リアクション転送が無効です。');
   }
 
-  var targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
+  var route = selectInvoiceForwardRoutes_(settings, [routeName || 'invoice_rocket'])[0];
+  var routeResolution = resolveInvoiceForwardRouteContexts_([route]);
+  if (!routeResolution.contexts.length) {
+    throw new Error(routeResolution.unresolved[0].error);
+  }
+  var routeContext = routeResolution.contexts[0];
+  var targetChannel = routeContext.targetChannel;
   var sourceChannel = getChannelByName_(sourceChannelName);
-  if (!isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannel)) {
-    throw new Error('請求書ロケット監視対象外のチャンネルです: ' + sourceChannel.name);
+  if (!isInvoiceSourceChannelAllowed_(settings, sourceChannel, [targetChannel])) {
+    throw new Error('依頼リアクション監視対象外のチャンネルです: ' + sourceChannel.name);
   }
 
   var messages = getThreadMessages(sourceChannel.id, sourceThreadTs);
@@ -2216,23 +2428,28 @@ function processInvoiceMessageByTs_(sourceChannelName, sourceMessageTs, sourceTh
     duplicate_skipped_count: 0,
     link_only_count: 0,
     no_pdf_skipped_count: 0,
-    error_count: 0
+    error_count: 0,
+    route_results: []
   };
-  processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, false);
+  processInvoiceMessageForRoutes_(message, sourceChannel, [routeContext], settings, stats, false);
 
   return {
     source_channel_name: sourceChannel.name,
     source_channel_id: sourceChannel.id,
     source_message_ts: sourceMessageTs,
     source_thread_ts: sourceThreadTs,
-    reaction_name: settings.invoiceReactionName,
-    message_has_reaction: messageHasReaction_(message, settings.invoiceReactionName),
+    route_name: route.routeName,
+    reaction_name: route.reactionName,
+    target_channel_name: targetChannel.name,
+    target_channel_id: targetChannel.id,
+    message_has_reaction: messageHasReaction_(message, route.reactionName),
     candidates_found: stats.candidates_found,
     posted_count: stats.posted_count,
     duplicate_skipped_count: stats.duplicate_skipped_count,
     link_only_count: stats.link_only_count,
     no_pdf_skipped_count: stats.no_pdf_skipped_count,
-    error_count: stats.error_count
+    error_count: stats.error_count,
+    route_results: stats.route_results
   };
 }
 
@@ -2243,7 +2460,7 @@ function findSlackMessageByTs_(messages, messageTs) {
   })[0] || null;
 }
 
-function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings, channelStats, dryRunOverride, lookbackDays, historyLimit, historyPageLimit, previousState, startedAtMs, forceRescanOverride, runtimeDeadlineMs) {
+function processInvoiceChannelReactions_(sourceChannel, routeContexts, settings, channelStats, dryRunOverride, lookbackDays, historyLimit, historyPageLimit, previousState, startedAtMs, forceRescanOverride, runtimeDeadlineMs, routeSignature) {
   channelStats.last_checked_at = nowIso_();
   var shouldStop = function() {
     return shouldStopInvoiceRun_(startedAtMs, settings.invoiceMaxRuntimeSeconds, runtimeDeadlineMs);
@@ -2267,7 +2484,10 @@ function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings,
   }
 
   var hasNewMessages = slackTsNumber_(latestTs) > slackTsNumber_(previousLatestTs);
-  var forceRescan = Boolean(forceRescanOverride) || shouldForceInvoiceChannelRescan_(previousState, settings.invoiceForceRescanHours);
+  var routeConfigurationChanged = invoiceRouteConfigurationChanged_(previousState, routeSignature);
+  var forceRescan = Boolean(forceRescanOverride) ||
+    routeConfigurationChanged ||
+    shouldForceInvoiceChannelRescan_(previousState, settings.invoiceForceRescanHours);
   if (previousState && !hasNewMessages && !forceRescan) {
     channelStats.skipped_unchanged = true;
     channelStats.scan_reason = 'unchanged';
@@ -2276,11 +2496,18 @@ function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings,
   }
 
   channelStats.scan_reason = previousState
-    ? (forceRescanOverride ? 'manual_forced_rescan' : (hasNewMessages ? 'new_messages' : 'forced_rescan'))
+    ? (forceRescanOverride
+      ? 'manual_forced_rescan'
+      : (routeConfigurationChanged
+        ? 'route_configuration_changed'
+        : (hasNewMessages ? 'new_messages' : 'forced_rescan')))
     : 'first_scan';
-  channelStats.last_full_scan_at = channelStats.last_checked_at;
-
   var scanFromLatestOnly = previousState && hasNewMessages && !forceRescan;
+  channelStats.last_full_scan_at = invoiceLastFullScanAt_(
+    previousState,
+    scanFromLatestOnly,
+    channelStats.last_checked_at
+  );
   var history = collectInvoiceHistoryMessages_(
     sourceChannel.id,
     scanFromLatestOnly ? previousLatestTs : cutoffSlackTs_(lookbackDays),
@@ -2307,14 +2534,14 @@ function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings,
     }
     var message = messages[messageIndex];
     try {
-      addInvoiceMessageSample_(channelStats, message, settings.invoiceReactionName, 'root', message.ts);
-      processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, channelStats, dryRunOverride);
+      addInvoiceRouteMessageSamples_(channelStats, message, routeContexts, 'root', message.ts);
+      processInvoiceMessageForRoutes_(message, sourceChannel, routeContexts, settings, channelStats, dryRunOverride);
     } catch (error) {
       channelStats.error_count += 1;
       saveError('processInvoiceReactionMessage:' + sourceChannel.id + ':' + (message.ts || ''), error);
     }
     try {
-      if (scanInvoiceThreadRepliesForForward_(message, sourceChannel, targetChannel, settings, channelStats, dryRunOverride, shouldStop)) {
+      if (scanInvoiceThreadRepliesForForward_(message, sourceChannel, routeContexts, settings, channelStats, dryRunOverride, shouldStop)) {
         markInvoiceChannelScanIncomplete_(channelStats, previousState);
         return;
       }
@@ -2325,10 +2552,23 @@ function processInvoiceChannelReactions_(sourceChannel, targetChannel, settings,
   }
 }
 
+function invoiceRouteConfigurationChanged_(previousState, routeSignature) {
+  return Boolean(previousState) &&
+    stringValue_(previousState.route_signature) !== stringValue_(routeSignature);
+}
+
+function invoiceLastFullScanAt_(previousState, scanFromLatestOnly, checkedAt) {
+  if (scanFromLatestOnly) {
+    return previousState ? stringValue_(previousState.last_full_scan_at) : '';
+  }
+  return stringValue_(checkedAt);
+}
+
 function markInvoiceChannelScanIncomplete_(channelStats, previousState) {
   channelStats.incomplete_scan = true;
   channelStats.last_full_scan_at = previousState ? stringValue_(previousState.last_full_scan_at) : '';
   channelStats.last_scanned_latest_ts = previousState ? stringValue_(previousState.last_scanned_latest_ts) : '';
+  channelStats.route_signature = previousState ? stringValue_(previousState.route_signature) : '';
 }
 
 function makeInvoiceChannelStats_(sourceChannel, rootStats) {
@@ -2365,7 +2605,9 @@ function makeInvoiceChannelStats_(sourceChannel, rootStats) {
     last_seen_latest_ts: '',
     last_error: '',
     incomplete_scan: false,
-    message_samples: []
+    message_samples: [],
+    route_signature: rootStats.route_signature,
+    route_results: []
   };
 }
 
@@ -2373,7 +2615,14 @@ function mergeInvoiceChannelStats_(stats, channelStats) {
   stats.channels_checked += 1;
   if (channelStats.skipped_unchanged) {
     stats.channels_skipped_unchanged += 1;
-  } else if (channelStats.messages_checked > 0 || channelStats.scan_reason === 'first_scan' || channelStats.scan_reason === 'forced_rescan' || channelStats.scan_reason === 'new_messages') {
+  } else if (
+    channelStats.messages_checked > 0 ||
+    channelStats.scan_reason === 'first_scan' ||
+    channelStats.scan_reason === 'forced_rescan' ||
+    channelStats.scan_reason === 'new_messages' ||
+    channelStats.scan_reason === 'route_configuration_changed' ||
+    channelStats.scan_reason === 'manual_forced_rescan'
+  ) {
     stats.channels_scanned += 1;
   }
   stats.messages_checked += channelStats.messages_checked;
@@ -2388,6 +2637,7 @@ function mergeInvoiceChannelStats_(stats, channelStats) {
   stats.no_pdf_skipped_count += channelStats.no_pdf_skipped_count;
   stats.error_count += channelStats.error_count;
   stats.history_next_cursor_found = stats.history_next_cursor_found || channelStats.history_next_cursor_found;
+  mergeInvoiceRouteResults_(stats, channelStats.route_results);
   (channelStats.message_samples || []).forEach(function(sample) {
     if (stats.message_samples.length < 10) {
       stats.message_samples.push(sample);
@@ -2470,7 +2720,7 @@ function collectInvoiceHistoryMessages_(channelId, oldestTs, historyLimit, histo
   };
 }
 
-function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetChannel, settings, stats, dryRunOverride, shouldStop) {
+function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, routeContexts, settings, stats, dryRunOverride, shouldStop, dependencies) {
   if (!rootMessage.reply_count || stats.reply_threads_checked >= settings.invoiceReplyThreadLimit) {
     return false;
   }
@@ -2479,7 +2729,10 @@ function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetC
   }
 
   stats.reply_threads_checked += 1;
-  var replies = getThreadMessages(sourceChannel.id, rootMessage.ts, shouldStop);
+  var replyDependencies = dependencies || {};
+  var replies = replyDependencies.getThreadMessages
+    ? replyDependencies.getThreadMessages(sourceChannel.id, rootMessage.ts, shouldStop)
+    : getThreadMessages(sourceChannel.id, rootMessage.ts, shouldStop);
   for (var replyIndex = 0; replyIndex < replies.length; replyIndex += 1) {
     if (shouldStop && shouldStop()) {
       return true;
@@ -2491,8 +2744,12 @@ function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetC
 
     stats.reply_messages_checked += 1;
     try {
-      addInvoiceMessageSample_(stats, reply, settings.invoiceReactionName, 'reply', rootMessage.ts);
-      processInvoiceMessageForForward_(reply, sourceChannel, targetChannel, settings, stats, dryRunOverride);
+      addInvoiceRouteMessageSamples_(stats, reply, routeContexts, 'reply', rootMessage.ts);
+      if (replyDependencies.processMessage) {
+        replyDependencies.processMessage(reply, sourceChannel, routeContexts, settings, stats, dryRunOverride);
+      } else {
+        processInvoiceMessageForRoutes_(reply, sourceChannel, routeContexts, settings, stats, dryRunOverride);
+      }
     } catch (error) {
       stats.error_count += 1;
       saveError('processInvoiceReactionReply:' + (reply.ts || ''), error);
@@ -2501,42 +2758,89 @@ function scanInvoiceThreadRepliesForForward_(rootMessage, sourceChannel, targetC
   return Boolean(shouldStop && shouldStop());
 }
 
-function processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, dryRunOverride) {
-  if (!messageHasReaction_(message, settings.invoiceReactionName)) {
+function processInvoiceMessageForRoutes_(message, sourceChannel, routeContexts, settings, stats, dryRunOverride) {
+  (routeContexts || []).forEach(function(context) {
+    var routeStats = ensureInvoiceRouteStats_(stats, context.route, context.targetChannel);
+    try {
+      processInvoiceMessageForForward_(
+        message,
+        sourceChannel,
+        context.targetChannel,
+        settings,
+        stats,
+        dryRunOverride,
+        context.route,
+        routeStats
+      );
+    } catch (error) {
+      incrementInvoiceRouteCounter_(stats, routeStats, 'error_count');
+      routeStats.last_error = error && error.message ? error.message : String(error);
+      saveError(
+        'processInvoiceMessageForRoutes:' + context.route.routeName + ':' + (message.ts || ''),
+        error
+      );
+    }
+  });
+}
+
+function processInvoiceMessageForForward_(message, sourceChannel, targetChannel, settings, stats, dryRunOverride, route, routeStats) {
+  var effectiveRoute = route || legacyInvoiceForwardRoute_(settings);
+  var effectiveRouteStats = routeStats || ensureInvoiceRouteStats_(stats, effectiveRoute, targetChannel);
+  if (!messageHasReaction_(message, effectiveRoute.reactionName)) {
     return;
   }
 
   var pdfFile = findPdfFile_(message);
   if (!pdfFile) {
-    stats.link_only_count += 1;
+    incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'link_only_count');
   }
-  stats.candidates_found += 1;
+  incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'candidates_found');
   var sourceMessageTs = message.ts;
   var fileId = invoiceForwardDedupKey_(message, pdfFile);
-  if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
-    stats.duplicate_skipped_count += 1;
+  if (isInvoiceAlreadyPosted_(
+    sourceChannel.id,
+    sourceMessageTs,
+    fileId,
+    effectiveRoute.reactionName,
+    targetChannel.id,
+    targetChannel.name
+  )) {
+    incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'duplicate_skipped_count');
     return;
   }
 
   if (dryRunOverride) {
-    stats.planned_count += 1;
+    incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'planned_count');
     return;
   }
 
   withInvoiceForwardPostLock_(function() {
-    if (isInvoiceAlreadyPosted_(sourceChannel.id, sourceMessageTs, fileId, settings.invoiceReactionName)) {
-      stats.duplicate_skipped_count += 1;
+    if (isInvoiceAlreadyPosted_(
+      sourceChannel.id,
+      sourceMessageTs,
+      fileId,
+      effectiveRoute.reactionName,
+      targetChannel.id,
+      targetChannel.name
+    )) {
+      incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'duplicate_skipped_count');
       return;
     }
 
     var sourceUrl = getPermalink(sourceChannel.id, sourceMessageTs);
     if (invoiceTargetChannelAlreadyContainsSourceUrl_(targetChannel.id, sourceUrl)) {
-      stats.duplicate_skipped_count += 1;
+      incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'duplicate_skipped_count');
       return;
     }
 
     var text = invoiceForwardMessage_(pdfFile ? invoiceFileName_(pdfFile) : '', sourceUrl);
-    var attachments = invoiceForwardAttachments_(message, sourceChannel.name, sourceUrl, pdfFile);
+    var attachments = invoiceForwardAttachments_(
+      message,
+      sourceChannel.name,
+      sourceUrl,
+      pdfFile,
+      effectiveRoute.reactionName
+    );
     var postResponse = postChannelMessage(targetChannel.id, text, attachments);
     saveInvoiceReactionPost_({
       processed_at: nowIso_(),
@@ -2546,14 +2850,14 @@ function processInvoiceMessageForForward_(message, sourceChannel, targetChannel,
       source_url: sourceUrl,
       file_id: fileId,
       file_name: pdfFile ? invoiceFileName_(pdfFile) : '',
-      reaction_name: normalizeReactionName_(settings.invoiceReactionName),
+      reaction_name: normalizeReactionName_(effectiveRoute.reactionName),
       target_channel_name: targetChannel.name,
       target_channel_id: targetChannel.id,
       posted_ts: postResponse.ts || '',
       posted_text: text,
       dry_run: false
     });
-    stats.posted_count += 1;
+    incrementInvoiceRouteCounter_(stats, effectiveRouteStats, 'posted_count');
   });
 }
 
@@ -3004,6 +3308,349 @@ function mergeReactionForwardStats_(target, source) {
     target[key] = (target[key] || 0) + (source[key] || 0);
   });
   target.deadline_reached = Boolean(target.deadline_reached || source.deadline_reached);
+}
+
+function legacyInvoiceForwardRoute_(settings) {
+  return {
+    enabled: Boolean(settings && settings.invoiceForwardEnabled),
+    routeName: 'invoice_rocket',
+    reactionName: normalizeReactionName_(settings && settings.invoiceReactionName),
+    targetChannelName: stringValue_(settings && settings.invoiceTargetChannelName).trim(),
+    legacy: true
+  };
+}
+
+function readInvoiceForwardRoutes_() {
+  var sheet = getManagedSheet_('invoice_forward_routes');
+  return readInvoiceForwardRoutesFromValues_(sheet.getDataRange().getValues());
+}
+
+function readInvoiceForwardRoutesFromValues_(values) {
+  var routes = [];
+  var seenRouteNames = {};
+  (values || []).slice(1).forEach(function(row, index) {
+    if (!row || !row.some(function(cell) { return stringValue_(cell).trim(); })) {
+      return;
+    }
+    var routeName = stringValue_(row[1]).trim();
+    var validationError = '';
+    if (!routeName) {
+      validationError = 'route_name_required';
+    } else if (seenRouteNames[routeName]) {
+      validationError = 'duplicate_route_name';
+    } else {
+      seenRouteNames[routeName] = true;
+    }
+    routes.push({
+      enabled: parseBoolean_(row[0]),
+      routeName: routeName,
+      reactionName: normalizeReactionName_(row[2]),
+      targetChannelName: stringValue_(row[3]).trim(),
+      legacy: false,
+      rowNumber: index + 2,
+      validationError: validationError
+    });
+  });
+  return routes;
+}
+
+function getInvoiceForwardRouteDefinitions_(settings) {
+  return addLegacyInvoiceForwardRoute_(
+    readInvoiceForwardRoutes_(),
+    settings
+  );
+}
+
+function addLegacyInvoiceForwardRoute_(routes, settings) {
+  var definitions = (routes || []).slice();
+  var hasLegacyRoute = definitions.some(function(route) {
+    return route.routeName === 'invoice_rocket';
+  });
+  if (!hasLegacyRoute) {
+    definitions.unshift(legacyInvoiceForwardRoute_(settings));
+  }
+  return definitions;
+}
+
+function invoiceForwardRouteIsRunnable_(route) {
+  return Boolean(
+    route &&
+    route.enabled &&
+    !route.validationError &&
+    route.routeName &&
+    route.reactionName &&
+    route.targetChannelName
+  );
+}
+
+function selectInvoiceForwardRoutes_(settings, routeNamesOverride) {
+  var routes = getInvoiceForwardRouteDefinitions_(settings).filter(invoiceForwardRouteIsRunnable_);
+  var requestedNames = (routeNamesOverride || []).map(function(name) {
+    return stringValue_(name).trim();
+  }).filter(function(name, index, values) {
+    return name && values.indexOf(name) === index;
+  });
+  if (!requestedNames.length) {
+    return routes;
+  }
+  var selected = routes.filter(function(route) {
+    return requestedNames.indexOf(route.routeName) !== -1;
+  });
+  if (selected.length !== requestedNames.length) {
+    var selectedNames = selected.map(function(route) { return route.routeName; });
+    var unknownNames = requestedNames.filter(function(name) {
+      return selectedNames.indexOf(name) === -1;
+    });
+    throw new Error('Unknown or disabled invoice forward route: ' + unknownNames.join(','));
+  }
+  return selected;
+}
+
+function findMatchingInvoiceForwardRoutes_(settings, reactionName) {
+  if (!settings.invoiceForwardEnabled) {
+    return [];
+  }
+  return findMatchingInvoiceForwardRoutesFromRoutes_(
+    selectInvoiceForwardRoutes_(settings),
+    reactionName
+  );
+}
+
+function findMatchingInvoiceForwardRoutesFromRoutes_(routes, reactionName) {
+  var normalizedReaction = normalizeReactionName_(reactionName);
+  return (routes || []).filter(invoiceForwardRouteIsRunnable_).filter(function(route) {
+    return route.reactionName === normalizedReaction;
+  });
+}
+
+function invoiceForwardRouteSignature_(routes) {
+  return JSON.stringify((routes || []).filter(invoiceForwardRouteIsRunnable_).map(function(route) {
+    return [
+      route.routeName,
+      normalizeReactionName_(route.reactionName),
+      stringValue_(route.targetChannelName).trim()
+    ].join('|');
+  }).sort());
+}
+
+function resolveInvoiceForwardRouteContexts_(routes) {
+  var contexts = [];
+  var unresolved = [];
+  (routes || []).forEach(function(route) {
+    try {
+      var targetChannel = getChannelByName_(route.targetChannelName);
+      if (targetChannel.is_member === false) {
+        throw new Error('Slack channel is not joined by bot: ' + route.targetChannelName);
+      }
+      contexts.push({
+        route: route,
+        targetChannel: targetChannel
+      });
+    } catch (error) {
+      unresolved.push({
+        route_name: route.routeName,
+        reaction_name: route.reactionName,
+        target_channel_name: route.targetChannelName,
+        error: error && error.message ? error.message : String(error)
+      });
+    }
+  });
+  return {
+    contexts: contexts,
+    unresolved: unresolved
+  };
+}
+
+function buildInvoiceForwardRouteRow_(input) {
+  var enabledValue = input.enabled === undefined || stringValue_(input.enabled).trim() === ''
+    ? true
+    : parseBoolean_(input.enabled);
+  var routeName = stringValue_(input.routeName).trim();
+  var reactionName = normalizeReactionName_(input.reactionName);
+  var targetChannelName = stringValue_(input.targetChannelName).trim();
+  if (!routeName) {
+    throw new Error('invoice_forward_routes route_name is required.');
+  }
+  if (!reactionName) {
+    throw new Error('invoice_forward_routes reaction_name is required: ' + routeName);
+  }
+  if (!targetChannelName) {
+    throw new Error('invoice_forward_routes target_channel_name is required: ' + routeName);
+  }
+  var route = {
+    enabled: enabledValue,
+    routeName: routeName,
+    reactionName: reactionName,
+    targetChannelName: targetChannelName,
+    legacy: false
+  };
+  return {
+    row: [
+      enabledValue ? 'true' : 'false',
+      routeName,
+      reactionName,
+      targetChannelName
+    ],
+    route: route
+  };
+}
+
+function buildInvoiceForwardRouteWebInput_(params, existingRoutes) {
+  var enabledText = params.enabled === undefined || stringValue_(params.enabled).trim() === ''
+    ? 'true'
+    : stringValue_(params.enabled);
+  var enabled = parseBoolean_(enabledText);
+  var routeName = stringValue_(params.route_name || '').trim();
+  var existing = (existingRoutes || []).filter(function(route) {
+    return route.routeName === routeName;
+  })[0] || null;
+  return {
+    enabled: enabled,
+    routeName: routeName,
+    reactionName: stringValue_(params.reaction_name || (existing ? existing.reactionName : '')),
+    targetChannelName: stringValue_(params.target_channel_name || (existing ? existing.targetChannelName : ''))
+  };
+}
+
+function upsertInvoiceForwardRouteFromWeb_(params) {
+  var settings = getSettings();
+  var input = buildInvoiceForwardRouteWebInput_(
+    params,
+    getInvoiceForwardRouteDefinitions_(settings)
+  );
+  var built = buildInvoiceForwardRouteRow_(input);
+  if (!built.route.enabled) {
+    return upsertInvoiceForwardRoute_(input);
+  }
+  var targetChannel = getChannelByName_(built.route.targetChannelName);
+  if (targetChannel.is_member === false) {
+    throw new Error('Slack channel is not joined by bot: ' + built.route.targetChannelName);
+  }
+  if (!settings.invoiceSourceAllJoinedChannels &&
+      isInvoiceSourceChannelAllowed_(settings, targetChannel, [])) {
+    throw new Error('Invoice forward target cannot also be a monitored source: ' + targetChannel.name);
+  }
+  return upsertInvoiceForwardRoute_({
+    enabled: built.route.enabled,
+    routeName: built.route.routeName,
+    reactionName: built.route.reactionName,
+    targetChannelName: targetChannel.name
+  });
+}
+
+function upsertInvoiceForwardRoute_(input) {
+  var built = buildInvoiceForwardRouteRow_(input);
+  var sheet = getManagedSheet_('invoice_forward_routes');
+  var values = sheet.getDataRange().getValues();
+  var rowIndex = 0;
+  for (var i = 1; i < values.length; i += 1) {
+    if (stringValue_(values[i][1]).trim() === built.route.routeName) {
+      rowIndex = i + 1;
+      break;
+    }
+  }
+  var action = 'updated';
+  if (!rowIndex) {
+    rowIndex = Math.max(sheet.getLastRow() + 1, 2);
+    action = 'inserted';
+  }
+  var range = sheet.getRange(rowIndex, 1, 1, built.row.length);
+  range.setNumberFormat('@');
+  range.setValues([built.row]);
+  return {
+    action: action,
+    row_index: rowIndex,
+    route: built.route
+  };
+}
+
+function makeInvoiceRouteStats_(route, targetChannel) {
+  return {
+    route_name: route.routeName,
+    reaction_name: route.reactionName,
+    target_channel_name: targetChannel ? targetChannel.name : route.targetChannelName,
+    target_channel_id: targetChannel ? targetChannel.id : '',
+    candidates_found: 0,
+    posted_count: 0,
+    planned_count: 0,
+    duplicate_skipped_count: 0,
+    link_only_count: 0,
+    no_pdf_skipped_count: 0,
+    error_count: 0,
+    last_error: ''
+  };
+}
+
+function ensureInvoiceRouteStats_(stats, route, targetChannel) {
+  stats.route_results = stats.route_results || [];
+  var existing = stats.route_results.filter(function(result) {
+    return result.route_name === route.routeName;
+  })[0];
+  if (existing) {
+    if (targetChannel && !existing.target_channel_id) {
+      existing.target_channel_name = targetChannel.name;
+      existing.target_channel_id = targetChannel.id;
+    }
+    return existing;
+  }
+  var created = makeInvoiceRouteStats_(route, targetChannel);
+  stats.route_results.push(created);
+  return created;
+}
+
+function incrementInvoiceRouteCounter_(stats, routeStats, key, amount) {
+  var increment = amount === undefined ? 1 : amount;
+  stats[key] = (stats[key] || 0) + increment;
+  if (routeStats) {
+    routeStats[key] = (routeStats[key] || 0) + increment;
+  }
+}
+
+function mergeInvoiceRouteResults_(targetStats, sourceResults) {
+  (sourceResults || []).forEach(function(source) {
+    var route = {
+      routeName: source.route_name,
+      reactionName: source.reaction_name,
+      targetChannelName: source.target_channel_name
+    };
+    var target = ensureInvoiceRouteStats_(targetStats, route, source.target_channel_id ? {
+      id: source.target_channel_id,
+      name: source.target_channel_name
+    } : null);
+    [
+      'candidates_found',
+      'posted_count',
+      'planned_count',
+      'duplicate_skipped_count',
+      'link_only_count',
+      'no_pdf_skipped_count',
+      'error_count'
+    ].forEach(function(key) {
+      target[key] = (target[key] || 0) + (source[key] || 0);
+    });
+    if (source.last_error) {
+      target.last_error = source.last_error;
+    }
+  });
+}
+
+function recordUnresolvedInvoiceRoutes_(stats, routes, unresolvedRoutes, contextName) {
+  (unresolvedRoutes || []).forEach(function(unresolved) {
+    var route = (routes || []).filter(function(candidate) {
+      return candidate.routeName === unresolved.route_name;
+    })[0] || {
+      routeName: unresolved.route_name,
+      reactionName: unresolved.reaction_name,
+      targetChannelName: unresolved.target_channel_name
+    };
+    var routeStats = ensureInvoiceRouteStats_(stats, route, null);
+    incrementInvoiceRouteCounter_(stats, routeStats, 'error_count');
+    routeStats.last_error = unresolved.error || 'target_channel_unresolved';
+    saveError(
+      (contextName || 'invoiceForwardRoute') + ':' + route.routeName,
+      new Error(routeStats.last_error)
+    );
+  });
 }
 
 function readReactionForwardRules_() {
@@ -3831,7 +4478,8 @@ function saveSlackReactionEventLog_(stats) {
       stats.planned_count || 0,
       stats.duplicate_skipped_count || 0,
       stats.error_count || 0,
-      stats.last_error || ''
+      stats.last_error || '',
+      stats.matching_invoice_route_count || 0
     ]);
   } catch (error) {
     Logger.log('slack_reaction_eventsへの保存に失敗: ' + (error && error.message ? error.message : error));
@@ -3902,7 +4550,8 @@ function readInvoiceChannelScanState_() {
       skipped_unchanged: parseBoolean_(row[13]),
       last_error: stringValue_(row[14]),
       dry_run: parseBoolean_(row[15]),
-      history_pages_scanned: parsePositiveInteger_(row[16], 0)
+      history_pages_scanned: parsePositiveInteger_(row[16], 0),
+      route_signature: stringValue_(row[17])
     };
   }
   return stateByChannelId;
@@ -3927,7 +4576,8 @@ function saveInvoiceChannelScanState_(record) {
     String(Boolean(record.skipped_unchanged)),
     record.last_error || '',
     String(Boolean(record.dry_run)),
-    record.history_pages_scanned || 0
+    record.history_pages_scanned || 0,
+    record.route_signature || ''
   ].map(function(value) {
     return stringValue_(value);
   });
@@ -3939,31 +4589,47 @@ function saveInvoiceChannelScanState_(record) {
   sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
 }
 
-function isInvoiceAlreadyPosted_(sourceChannelId, sourceMessageTs, fileId, reactionName) {
+function isInvoiceAlreadyPosted_(sourceChannelId, sourceMessageTs, fileId, reactionName, targetChannelId, targetChannelName) {
   var sheet = getManagedSheet_('invoice_reaction_posts');
   var values = sheet.getDataRange().getValues();
   if (values.length <= 1) {
     return false;
   }
-  var normalizedTs = normalizeSlackTsForCompare_(sourceMessageTs);
-  var normalizedReaction = normalizeReactionName_(reactionName);
-  var normalizedFileId = stringValue_(fileId);
   for (var i = 1; i < values.length; i += 1) {
-    var row = values[i];
-    var dryRun = parseBoolean_(row[12]);
-    if (dryRun) {
-      continue;
-    }
-    if (
-      stringValue_(row[2]) === stringValue_(sourceChannelId) &&
-      normalizeSlackTsForCompare_(row[3]) === normalizedTs &&
-      stringValue_(row[5]) === normalizedFileId &&
-      normalizeReactionName_(row[7]) === normalizedReaction
-    ) {
+    if (invoiceReactionPostRowMatches_(
+      values[i],
+      sourceChannelId,
+      sourceMessageTs,
+      fileId,
+      reactionName,
+      targetChannelId,
+      targetChannelName
+    )) {
       return true;
     }
   }
   return false;
+}
+
+function invoiceReactionPostRowMatches_(row, sourceChannelId, sourceMessageTs, fileId, reactionName, targetChannelId, targetChannelName) {
+  if (parseBoolean_(row[12])) {
+    return false;
+  }
+  var storedTargetChannelId = stringValue_(row[9]);
+  var targetMatches = stringValue_(targetChannelId)
+    ? (
+      storedTargetChannelId === stringValue_(targetChannelId) ||
+      (!storedTargetChannelId && Boolean(targetChannelName) &&
+        channelNameMatches_({name: stringValue_(row[8])}, targetChannelName))
+    )
+    : channelNameMatches_({name: stringValue_(row[8])}, targetChannelName);
+  return (
+    stringValue_(row[2]) === stringValue_(sourceChannelId) &&
+    normalizeSlackTsForCompare_(row[3]) === normalizeSlackTsForCompare_(sourceMessageTs) &&
+    stringValue_(row[5]) === stringValue_(fileId) &&
+    normalizeReactionName_(row[7]) === normalizeReactionName_(reactionName) &&
+    targetMatches
+  );
 }
 
 function refreshInvoicePostPreviews_(confirm) {
@@ -3995,7 +4661,7 @@ function refreshInvoicePostPreviews_(confirm) {
 
     try {
       var text = invoiceForwardMessage_(fileName, sourceUrl);
-      var attachments = invoiceRecordAttachments_(fileName, sourceUrl);
+      var attachments = invoiceRecordAttachments_(fileName, sourceUrl, row[7]);
       updateChannelMessage(targetChannelId, postedTs, text, attachments);
       sheet.getRange(i + 1, 12).setNumberFormat('@');
       sheet.getRange(i + 1, 12).setValue(text);
@@ -4122,6 +4788,14 @@ function testInvoiceForwardFallback_() {
     'invoice without PDF must dedupe by source message timestamp'
   );
   assertTest_(invoiceRecordAttachments_('', sourceUrl).length === 1, 'invoice preview attachment must be generated');
+  assertTest_(
+    invoiceRecordAttachments_('', sourceUrl, 'rocket')[0].title === 'ロケット付き元投稿',
+    'rocket preview title must remain unchanged'
+  );
+  assertTest_(
+    invoiceRecordAttachments_('', sourceUrl, 'flying_saucer')[0].title === 'UFO付き元投稿',
+    'UFO preview title must identify the UFO route'
+  );
 }
 
 function testInvoiceSettingsParsing_() {
@@ -4137,6 +4811,23 @@ function testInvoiceSettingsParsing_() {
     JSON.stringify(parseInvoiceSourceChannelNames_({})) === JSON.stringify(parseCommaSeparatedSetting_(DEFAULT_SETTINGS.INVOICE_SOURCE_CHANNEL_NAMES)),
     'missing invoice source setting must default to explicit invoice channels'
   );
+  var defaultInvoiceSources = parseCommaSeparatedSetting_(DEFAULT_SETTINGS.INVOICE_SOURCE_CHANNEL_NAMES);
+  assertTest_(defaultInvoiceSources.length === 5, 'default invoice source setting must contain exactly five active channels');
+  assertTest_(defaultInvoiceSources.indexOf('依頼_引き継ぎ') === -1, 'archived handover channel must not be a default invoice source');
+  assertTest_(DEFAULT_SETTINGS.INVOICE_FORCE_RESCAN_HOURS === '1', 'invoice full recovery must run hourly by default');
+  assertTest_(
+    invoiceLastFullScanAt_({last_full_scan_at: '2026-07-30T01:00:00.000Z'}, true, '2026-07-30T02:00:00.000Z') ===
+      '2026-07-30T01:00:00.000Z',
+    'incremental scans must preserve the previous full-scan timestamp'
+  );
+  assertTest_(
+    invoiceLastFullScanAt_({last_full_scan_at: '2026-07-30T01:00:00.000Z'}, false, '2026-07-30T02:00:00.000Z') ===
+      '2026-07-30T02:00:00.000Z',
+    'full scans must advance the full-scan timestamp'
+  );
+  assertTest_(settingUpgradeMatches_('3', {from: ['6', '3']}), 'three-hour invoice recovery must migrate to hourly');
+  assertTest_(settingUpgradeMatches_('6', {from: ['6', '3']}), 'six-hour invoice recovery must migrate to hourly');
+  assertTest_(!settingUpgradeMatches_('2', {from: ['6', '3']}), 'custom invoice recovery intervals must remain unchanged');
   assertTest_(parseTriggerIntervalHours_('hourly') === 1, 'hourly trigger setting must parse as 1 hour');
   assertTest_(parseTriggerIntervalHours_('') === 0, 'blank trigger interval must fall back to daily hour list');
   assertTest_(invoiceRuntimeGuardSeconds_(300) === 180, 'invoice runtime guard must reserve time before the web execution limit');
@@ -4149,6 +4840,225 @@ function testInvoiceSettingsParsing_() {
   assertTest_(
     findSlackMessageByTs_([{ts: '100.1'}, {ts: '200.2'}], '200.200000').ts === '200.2',
     'targeted invoice messages must match normalized Slack timestamps'
+  );
+}
+
+function testInvoiceForwardRoutes_() {
+  assertTest_(
+    SHEET_HEADERS.slack_reaction_events[SHEET_HEADERS.slack_reaction_events.length - 1] === 'matching_invoice_route_count',
+    'new Slack reaction event fields must be appended to preserve legacy rows'
+  );
+  var routes = readInvoiceForwardRoutesFromValues_([
+    SHEET_HEADERS.invoice_forward_routes,
+    ['true', 'invoice_rocket', ':ROCKET:', '依頼＿請求書'],
+    ['true', 'payment_ufo', ':Flying_Saucer:', '依頼_振込'],
+    ['false', 'disabled_route', 'white_check_mark', '確認'],
+    ['true', 'payment_ufo', 'flying_saucer', '重複先'],
+    ['true', '', 'eyes', '空名']
+  ]);
+  var runnable = routes.filter(invoiceForwardRouteIsRunnable_);
+  assertTest_(routes.length === 5, 'invoice route parser must retain configured rows');
+  assertTest_(runnable.length === 2, 'invoice route parser must expose only two runnable routes');
+  assertTest_(routes[3].validationError === 'duplicate_route_name', 'duplicate invoice route names must be invalid');
+  assertTest_(routes[4].validationError === 'route_name_required', 'blank invoice route names must be invalid');
+  assertTest_(runnable[1].reactionName === 'flying_saucer', 'UFO reaction name must normalize to flying_saucer');
+  assertTest_(
+    findMatchingInvoiceForwardRoutesFromRoutes_(runnable, ':FLYING_SAUCER:')[0].routeName === 'payment_ufo',
+    'UFO reaction must select only the payment route'
+  );
+  assertTest_(
+    findMatchingInvoiceForwardRoutesFromRoutes_(runnable, 'rocket')[0].routeName === 'invoice_rocket',
+    'rocket reaction must keep the legacy invoice route'
+  );
+  assertTest_(
+    invoiceForwardRouteSignature_(runnable) !== invoiceForwardRouteSignature_([runnable[0]]),
+    'invoice route signature must change when the UFO route is added'
+  );
+  assertTest_(
+    invoiceRouteConfigurationChanged_({route_signature: 'old'}, invoiceForwardRouteSignature_(runnable)),
+    'changed invoice route signature must force a channel rescan'
+  );
+  assertTest_(
+    addLegacyInvoiceForwardRoute_(
+      [runnable[1]],
+      {
+        invoiceForwardEnabled: true,
+        invoiceReactionName: 'rocket',
+        invoiceTargetChannelName: '依頼＿請求書'
+      }
+    )[0].routeName === 'invoice_rocket',
+    'legacy rocket settings must remain available when the route row is absent'
+  );
+
+  var postedRow = [
+    '', '', 'C_SOURCE', '100.100000', '', 'pdf-1', 'payment.pdf',
+    'flying_saucer', '依頼_振込', 'C_TARGET', '', '', 'false'
+  ];
+  assertTest_(
+    invoiceReactionPostRowMatches_(
+      postedRow,
+      'C_SOURCE',
+      '100.1',
+      'pdf-1',
+      ':FLYING_SAUCER:',
+      'C_TARGET',
+      '依頼_振込'
+    ),
+    'invoice duplicate row must match the same target channel'
+  );
+  assertTest_(
+    !invoiceReactionPostRowMatches_(
+      postedRow,
+      'C_SOURCE',
+      '100.1',
+      'pdf-1',
+      'flying_saucer',
+      'C_OTHER_TARGET',
+      '別の転送先'
+    ),
+    'invoice duplicate row must not match a different target channel'
+  );
+  var legacyTargetRow = postedRow.slice();
+  legacyTargetRow[9] = '';
+  assertTest_(
+    invoiceReactionPostRowMatches_(
+      legacyTargetRow,
+      'C_SOURCE',
+      '100.1',
+      'pdf-1',
+      'flying_saucer',
+      'C_TARGET',
+      '依頼_振込'
+    ),
+    'legacy invoice rows with a blank target ID must fall back to the target name'
+  );
+  var dryRunRow = postedRow.slice();
+  dryRunRow[12] = 'true';
+  assertTest_(
+    !invoiceReactionPostRowMatches_(
+      dryRunRow,
+      'C_SOURCE',
+      '100.1',
+      'pdf-1',
+      'flying_saucer',
+      'C_TARGET',
+      '依頼_振込'
+    ),
+    'invoice dry-run history must not block a production post'
+  );
+
+  var sourceResolution = resolveInvoiceSourceChannelsFromAvailable_(
+    {
+      invoiceSourceAllJoinedChannels: false,
+      invoiceSourceChannelNames: ['source-one', 'missing-source', 'source-two']
+    },
+    [{id: 'C_TARGET', name: '依頼_振込'}],
+    [
+      {id: 'C1', name: 'source-one', is_member: true},
+      {id: 'C_TARGET', name: '依頼_振込', is_member: true},
+      {id: 'C2', name: 'source-two', is_member: true}
+    ]
+  );
+  assertTest_(sourceResolution.channels.length === 2, 'resolved invoice sources must continue around one missing channel');
+  assertTest_(sourceResolution.unresolved.length === 1, 'missing invoice source must remain in diagnostics');
+  assertTest_(sourceResolution.unresolved[0].configured_name === 'missing-source', 'missing invoice source name must be preserved');
+
+  var seededRows = [];
+  var fakeRouteSheet = {
+    getLastRow: function() { return 1; },
+    getRange: function() {
+      return {
+        setNumberFormat: function() {},
+        setValues: function(values) { seededRows = values; }
+      };
+    }
+  };
+  var fakeSettingsSheet = {
+    getDataRange: function() {
+      return {
+        getValues: function() {
+          return [
+            SHEET_HEADERS.settings,
+            ['INVOICE_REACTION_NAME', 'rocket', ''],
+            ['INVOICE_TARGET_CHANNEL_NAME', '依頼＿請求書', '']
+          ];
+        }
+      };
+    }
+  };
+  seedInvoiceForwardRoutes_(fakeRouteSheet, fakeSettingsSheet);
+  assertTest_(seededRows.length === 2, 'invoice route seeding must create exactly two initial routes');
+  assertTest_(seededRows[1][1] === 'payment_ufo', 'invoice route seeding must include the UFO route');
+  var existingRouteTouched = false;
+  seedInvoiceForwardRoutes_({
+    getLastRow: function() { return 2; },
+    getRange: function() {
+      existingRouteTouched = true;
+      return {};
+    }
+  }, fakeSettingsSheet);
+  assertTest_(!existingRouteTouched, 'invoice route seeding must not overwrite existing rows');
+
+  var disabledRouteInput = buildInvoiceForwardRouteWebInput_(
+    {enabled: 'false', route_name: 'payment_ufo'},
+    runnable
+  );
+  assertTest_(disabledRouteInput.enabled === false, 'route management must parse enabled=false');
+  assertTest_(
+    disabledRouteInput.reactionName === 'flying_saucer' &&
+      disabledRouteInput.targetChannelName === '依頼_振込',
+    'disabling a route must reuse its existing reaction and target without Slack resolution'
+  );
+
+  var routeContext = {
+    route: runnable[1],
+    targetChannel: {id: 'C_TARGET', name: '依頼_振込'}
+  };
+  var sampleStats = {
+    reply_threads_checked: 0,
+    reply_messages_checked: 0,
+    error_count: 0,
+    message_samples: []
+  };
+  addInvoiceRouteMessageSamples_(
+    sampleStats,
+    {ts: '200.1', reactions: [{name: 'flying_saucer'}], files: []},
+    [routeContext],
+    'root',
+    '200.1'
+  );
+  var processedReplies = [];
+  var replyScanIncomplete = scanInvoiceThreadRepliesForForward_(
+    {ts: '200.1', reply_count: 1},
+    {id: 'C_SOURCE', name: 'source-one'},
+    [routeContext],
+    {invoiceReplyThreadLimit: 25},
+    sampleStats,
+    true,
+    function() { return false; },
+    {
+      getThreadMessages: function() {
+        return [
+          {ts: '200.1'},
+          {ts: '200.2', thread_ts: '200.1', reactions: [{name: 'flying_saucer'}], files: []}
+        ];
+      },
+      processMessage: function(message) {
+        processedReplies.push(message.ts);
+      }
+    }
+  );
+  assertTest_(!replyScanIncomplete, 'UFO reply scan must complete without a deadline');
+  assertTest_(processedReplies.length === 1 && processedReplies[0] === '200.2', 'UFO reply scan must process the reply but not the root twice');
+  assertTest_(sampleStats.message_samples[0].scope === 'root', 'UFO route must recognize a root message');
+  assertTest_(sampleStats.message_samples[1].scope === 'reply', 'UFO route must recognize a reply message');
+  assertTest_(
+    invoiceForwardMessage_('payment.pdf', 'https://slack.test/source').indexOf('payment.pdf') !== -1,
+    'invoice PDF payload must include the PDF file name'
+  );
+  assertTest_(
+    invoiceForwardMessage_('', 'https://slack.test/source').indexOf('https://slack.test/source') !== -1,
+    'invoice link-only payload must include the source message link'
   );
 }
 
@@ -4368,6 +5278,7 @@ function testResolveVinGroups() {
   testFormatSlackMessagePermalink_();
   testInvoiceForwardFallback_();
   testInvoiceSettingsParsing_();
+  testInvoiceForwardRoutes_();
   testReactionForwarding_();
   testScheduledRuntimeGuards_();
   var parentChannelId = 'PARENT';
@@ -4438,6 +5349,8 @@ function testScheduledRuntimeGuards_() {
   );
   var phaseDeadline = scheduledPhaseDeadline_(nowMs + 60000, 120);
   assertTest_(phaseDeadline <= nowMs + 60000, 'phase deadline must not exceed the hard deadline');
+  assertTest_(scheduledPhaseErrorCount_({error_count: 2}) === 2, 'scheduled phase errors must be included in the run summary');
+  assertTest_(scheduledPhaseErrorCount_({}) === 0, 'missing scheduled phase errors must count as zero');
 }
 
 function testDryRunOnce() {
@@ -5119,27 +6032,74 @@ function getConfiguredChannels_(settings) {
   return channels;
 }
 
-function resolveInvoiceSourceChannels_(settings, targetChannel) {
-  var channels = [];
+function resolveInvoiceSourceChannels_(settings, targetChannels) {
+  return resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels).channels;
+}
+
+function resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels) {
+  return resolveInvoiceSourceChannelsFromAvailable_(
+    settings,
+    targetChannels,
+    getAllChannels_()
+  );
+}
+
+function resolveInvoiceSourceChannelsFromAvailable_(settings, targetChannels, availableChannels) {
+  var targets = Array.isArray(targetChannels)
+    ? targetChannels
+    : (targetChannels ? [targetChannels] : []);
+  var targetIds = {};
+  targets.forEach(function(channel) {
+    if (channel && channel.id) {
+      targetIds[channel.id] = true;
+    }
+  });
+
+  var available = availableChannels || [];
+  var selected = [];
+  var unresolved = [];
   if (settings.invoiceSourceAllJoinedChannels) {
-    channels = getJoinedChannels_();
+    selected = available.filter(function(channel) {
+      return channel && channel.id && (channel.is_member === true || channel.is_private === true);
+    });
   } else {
-    settings.invoiceSourceChannelNames.forEach(function(name) {
-      var channel = getChannelByName_(name);
-      if (channel.is_member === false) {
-        throw new Error('Slack channel is not joined by bot: ' + name);
+    (settings.invoiceSourceChannelNames || []).forEach(function(name) {
+      var requestedName = stringValue_(name).trim();
+      if (!requestedName) {
+        return;
       }
-      channels.push(channel);
+      var channel = available.filter(function(candidate) {
+        return candidate && (
+          stringValue_(candidate.id) === requestedName ||
+          channelNameMatches_(candidate, requestedName)
+        );
+      })[0];
+      if (!channel) {
+        unresolved.push({
+          configured_name: requestedName,
+          reason: 'channel_not_found_or_bot_not_invited'
+        });
+        return;
+      }
+      if (channel.is_member === false) {
+        unresolved.push({
+          configured_name: requestedName,
+          channel_id: channel.id || '',
+          reason: 'bot_not_invited'
+        });
+        return;
+      }
+      selected.push(channel);
     });
   }
 
   var seen = {};
-  return channels.filter(function(channel) {
-    if (!channel || !channel.id || seen[channel.id]) {
+  var channels = selected.filter(function(channel) {
+    if (!channel || !channel.id || seen[channel.id] || targetIds[channel.id]) {
       return false;
     }
     seen[channel.id] = true;
-    return !targetChannel || channel.id !== targetChannel.id;
+    return true;
   }).map(function(channel) {
     return {
       id: channel.id,
@@ -5150,6 +6110,11 @@ function resolveInvoiceSourceChannels_(settings, targetChannel) {
   }).sort(function(a, b) {
     return a.name.localeCompare(b.name, 'ja');
   });
+
+  return {
+    channels: channels,
+    unresolved: unresolved
+  };
 }
 
 function getJoinedChannels_() {
@@ -5160,30 +6125,59 @@ function getJoinedChannels_() {
 
 function listJoinedChannelsForInvoice_() {
   var settings = getSettings();
-  var targetChannel = null;
-  try {
-    targetChannel = getChannelByName_(settings.invoiceTargetChannelName);
-  } catch (error) {
-    saveError('listJoinedChannelsForInvoice:target', error);
-  }
+  var configuredRoutes = getInvoiceForwardRouteDefinitions_(settings);
+  var routes = configuredRoutes.filter(invoiceForwardRouteIsRunnable_);
+  var invalidRoutes = configuredRoutes.filter(function(route) {
+    return route.enabled && !invoiceForwardRouteIsRunnable_(route);
+  });
+  var routeResolution = resolveInvoiceForwardRouteContexts_(routes);
+  routeResolution.unresolved.forEach(function(unresolvedRoute) {
+    saveError(
+      'listJoinedChannelsForInvoice:target:' + unresolvedRoute.route_name,
+      new Error(unresolvedRoute.error)
+    );
+  });
+  var targetChannels = routeResolution.contexts.map(function(context) {
+    return context.targetChannel;
+  });
   var joinedChannels = getJoinedChannels_().map(channelSummary_);
-  var invoiceSources = [];
-  var invoiceSourceError = '';
-  if (targetChannel) {
-    try {
-      invoiceSources = resolveInvoiceSourceChannels_(settings, targetChannel).map(channelSummary_);
-    } catch (error) {
-      invoiceSourceError = error && error.message ? error.message : String(error);
-      saveError('listJoinedChannelsForInvoice:sources', error);
-    }
-  }
+  var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels);
+  var invoiceSources = sourceResolution.channels.map(channelSummary_);
+  sourceResolution.unresolved.forEach(function(unresolvedSource) {
+    saveError(
+      'listJoinedChannelsForInvoice:source:' + unresolvedSource.configured_name,
+      new Error(unresolvedSource.reason)
+    );
+  });
   return {
     checked_at: nowIso_(),
     joined_count: joinedChannels.length,
     invoice_source_count: invoiceSources.length,
-    target_channel: targetChannel ? channelSummary_(targetChannel) : null,
+    target_channel: targetChannels.length ? channelSummary_(targetChannels[0]) : null,
+    target_channels: targetChannels.map(channelSummary_),
+    invoice_forward_routes: routes.map(function(route) {
+      return {
+        enabled: route.enabled,
+        route_name: route.routeName,
+        reaction_name: route.reactionName,
+        target_channel_name: route.targetChannelName
+      };
+    }),
+    invalid_invoice_forward_routes: invalidRoutes.map(function(route) {
+      return {
+        route_name: route.routeName,
+        reaction_name: route.reactionName,
+        target_channel_name: route.targetChannelName,
+        row_number: route.rowNumber || '',
+        validation_error: route.validationError || 'route_not_runnable'
+      };
+    }),
+    unresolved_target_routes: routeResolution.unresolved,
     invoice_source_setting: settings.invoiceSourceChannelNames.join(','),
-    invoice_source_error: invoiceSourceError,
+    invoice_source_error: sourceResolution.unresolved.map(function(source) {
+      return source.configured_name + ':' + source.reason;
+    }).join(','),
+    unresolved_sources: sourceResolution.unresolved,
     channels: joinedChannels,
     invoice_sources: invoiceSources
   };
@@ -5232,16 +6226,26 @@ function getManagedSheet_(sheetName) {
     sheet = spreadsheet.insertSheet(sheetName);
   }
   needsInitialization = needsInitialization || sheet.getLastRow() === 0;
-  if (needsInitialization) {
+  var needsSchemaUpgrade = [
+    'invoice_forward_routes',
+    'invoice_channel_scan_state',
+    'slack_reaction_events'
+  ].indexOf(sheetName) !== -1 && !MANAGED_SHEET_SCHEMA_READY[sheetName];
+  if (needsInitialization || needsSchemaUpgrade) {
     ensureHeader_(sheet, SHEET_HEADERS[sheetName]);
-    sheet.setFrozenRows(1);
-    sheet.autoResizeColumns(1, SHEET_HEADERS[sheetName].length);
+    MANAGED_SHEET_SCHEMA_READY[sheetName] = true;
+    if (needsInitialization) {
+      sheet.setFrozenRows(1);
+      sheet.autoResizeColumns(1, SHEET_HEADERS[sheetName].length);
+    }
   }
   if (sheetName === 'settings' && needsInitialization) {
     seedDefaultSettings_(sheet);
     upgradeInvoiceSafetySettings_(sheet);
     ensureGeneratedSecretSetting_(sheet, 'SLACK_EVENT_REQUEST_TOKEN', 'slackevt_');
     ensureGeneratedSecretSetting_(sheet, 'WEB_ADMIN_TOKEN', 'admin_');
+  } else if (sheetName === 'invoice_forward_routes' && sheet.getLastRow() <= 1) {
+    seedInvoiceForwardRoutes_(sheet, getManagedSheet_('settings'));
   } else if (sheetName === 'reaction_forward_rules' && needsInitialization) {
     seedReactionForwardRuleTemplate_(sheet);
   }
@@ -5300,6 +6304,29 @@ function seedDefaultSettings_(sheet) {
   });
 }
 
+function seedInvoiceForwardRoutes_(sheet, settingsSheet) {
+  if (!sheet || sheet.getLastRow() > 1) {
+    return;
+  }
+  var rawSettings = settingsSheet ? readSettingsMap_(settingsSheet) : {};
+  var rows = [
+    [
+      'true',
+      'invoice_rocket',
+      normalizeReactionName_(settingOrDefault_(rawSettings, 'INVOICE_REACTION_NAME')),
+      stringValue_(settingOrDefault_(rawSettings, 'INVOICE_TARGET_CHANNEL_NAME')).trim()
+    ],
+    [
+      'true',
+      'payment_ufo',
+      'flying_saucer',
+      '依頼_振込'
+    ]
+  ];
+  sheet.getRange(2, 1, rows.length, rows[0].length).setNumberFormat('@');
+  sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+}
+
 function seedReactionForwardRuleTemplate_(sheet) {
   if (sheet.getLastRow() > 1) {
     return;
@@ -5323,16 +6350,21 @@ function upgradeInvoiceSafetySettings_(sheet) {
     INVOICE_HISTORY_LIMIT: {from: '50', to: '100'},
     INVOICE_HISTORY_PAGE_LIMIT: {from: '', to: '3'},
     INVOICE_REPLY_THREAD_LIMIT: {from: '10', to: '25'},
-    INVOICE_FORCE_RESCAN_HOURS: {from: '6', to: '3'}
+    INVOICE_FORCE_RESCAN_HOURS: {from: ['6', '3'], to: '1'}
   };
   var settings = readSettingsMap_(sheet);
   Object.keys(upgrades).forEach(function(key) {
     var current = stringValue_(settings[key]).trim();
     var upgrade = upgrades[key];
-    if (current === upgrade.from) {
+    if (settingUpgradeMatches_(current, upgrade)) {
       upsertSetting_(sheet, key, upgrade.to, settingMemo_(key));
     }
   });
+}
+
+function settingUpgradeMatches_(current, upgrade) {
+  var fromValues = Array.isArray(upgrade.from) ? upgrade.from : [upgrade.from];
+  return fromValues.indexOf(current) !== -1;
 }
 
 function readSettingsMap_(sheet) {
@@ -5402,16 +6434,16 @@ function settingMemo_(key) {
     DRY_RUN: 'trueなら車案件の紐付けをSlackへ投稿せずdry_run_logsだけ保存します。',
     MAIN_TRIGGER_HOURS: 'scheduledMain()を毎日実行する時刻です。0-23時をカンマ区切りで指定します。例: 3,10,13,16,20',
     MAIN_TRIGGER_INTERVAL_HOURS: '1ならscheduledMain()を1時間ごとに実行します。空にするとMAIN_TRIGGER_HOURSを使います。',
-    INVOICE_FORWARD_ENABLED: 'trueならロケットリアクション付きPDF投稿を請求書チャンネルへ転送します。',
+    INVOICE_FORWARD_ENABLED: 'trueならinvoice_forward_routesに登録した依頼リアクション転送を有効にします。',
     INVOICE_SOURCE_CHANNEL_NAME: '旧設定。単一監視元チャンネル名です。INVOICE_SOURCE_CHANNEL_NAMESが空の場合だけ使います。',
-    INVOICE_SOURCE_CHANNEL_NAMES: '*ならBot参加済み全チャンネルを監視します。指定する場合はチャンネル名をカンマ区切りにします。',
-    INVOICE_TARGET_CHANNEL_NAME: '請求書転送先チャンネル名です。',
-    INVOICE_REACTION_NAME: '転送条件にするSlack絵文字名です。:rocket: の場合は rocket と指定します。',
-    INVOICE_LOOKBACK_DAYS: '請求書転送で直近何日分の投稿を見るかを指定します。',
-    INVOICE_HISTORY_LIMIT: '請求書転送で1回に確認する投稿数です。制限対策のため必要以上に増やさないでください。',
-    INVOICE_REPLY_THREAD_LIMIT: '請求書転送で返信を確認するrootスレッド数の上限です。',
+    INVOICE_SOURCE_CHANNEL_NAMES: '*ならBot参加済み全チャンネルを監視します。通常はロケット／UFO共通の監視元をカンマ区切りで明示します。',
+    INVOICE_TARGET_CHANNEL_NAME: '旧ロケットルートの転送先互換設定です。通常はinvoice_forward_routesを使います。',
+    INVOICE_REACTION_NAME: '旧ロケットルートの絵文字名互換設定です。通常はinvoice_forward_routesを使います。',
+    INVOICE_LOOKBACK_DAYS: '依頼リアクション転送で直近何日分の投稿を見るかを指定します。',
+    INVOICE_HISTORY_LIMIT: '依頼リアクション転送で1ページに確認する投稿数です。制限対策のため必要以上に増やさないでください。',
+    INVOICE_REPLY_THREAD_LIMIT: '依頼リアクション転送で返信を確認するrootスレッド数の上限です。',
     INVOICE_FORCE_RESCAN_HOURS: '新着がないチャンネルでもこの時間を過ぎたら再スキャンし、後付けリアクションを拾います。',
-    INVOICE_FORWARD_DRY_RUN: 'trueなら請求書転送もSlackへ投稿せず候補数だけ確認します。',
+    INVOICE_FORWARD_DRY_RUN: 'trueなら依頼リアクション転送もSlackへ投稿せず候補数だけ確認します。',
     VEHICLE_API_ENABLED: 'trueの場合だけ車管理専用のSlackイベント送信を有効にします。',
     VEHICLE_API_URL: '車管理の署名API URLです。',
     VEHICLE_API_SECRET: '車管理とGASだけで共有するHMAC秘密鍵です。画面やSlackへ表示しません。',
@@ -5694,11 +6726,28 @@ function messageHasReaction_(message, reactionName) {
   });
 }
 
-function addInvoiceMessageSample_(stats, message, reactionName, scope, threadTs) {
+function addInvoiceRouteMessageSamples_(stats, message, routeContexts, scope, threadTs) {
+  (routeContexts || []).forEach(function(context) {
+    if (messageHasReaction_(message, context.route.reactionName)) {
+      addInvoiceMessageSample_(
+        stats,
+        message,
+        context.route.reactionName,
+        scope,
+        threadTs,
+        context.route.routeName
+      );
+    }
+  });
+}
+
+function addInvoiceMessageSample_(stats, message, reactionName, scope, threadTs, routeName) {
   if (!stats.message_samples || stats.message_samples.length >= 10) {
     return;
   }
-  stats.message_samples.push(invoiceMessageSample_(message, reactionName, scope, threadTs));
+  var sample = invoiceMessageSample_(message, reactionName, scope, threadTs);
+  sample.route_name = routeName || '';
+  stats.message_samples.push(sample);
 }
 
 function invoiceMessageSample_(message, reactionName, scope, threadTs) {
@@ -5751,7 +6800,7 @@ function invoiceForwardMessage_(fileName, sourceUrl) {
   return '【' + fileName + ' ' + todayDateString_() + '】\n' + slackLinkText_(sourceUrl, '元投稿を開く');
 }
 
-function invoiceForwardAttachments_(message, sourceChannelName, sourceUrl, pdfFile) {
+function invoiceForwardAttachments_(message, sourceChannelName, sourceUrl, pdfFile, reactionName) {
   var lines = [];
   var preview = stringValue_(message.text).trim();
   var files = (message.files || []).map(invoiceFileName_).filter(function(name) {
@@ -5766,11 +6815,30 @@ function invoiceForwardAttachments_(message, sourceChannelName, sourceUrl, pdfFi
   if (files.length) {
     lines.push('添付: ' + files.join(', '));
   }
-  return [slackPreviewAttachment_(pdfFile ? invoiceFileName_(pdfFile) : 'ロケット付き元投稿', sourceUrl, lines.join('\n'))];
+  return [slackPreviewAttachment_(
+    pdfFile ? invoiceFileName_(pdfFile) : invoiceReactionPreviewTitle_(reactionName),
+    sourceUrl,
+    lines.join('\n')
+  )];
 }
 
-function invoiceRecordAttachments_(fileName, sourceUrl) {
-  return [slackPreviewAttachment_(fileName || 'ロケット付き元投稿', sourceUrl, fileName ? 'PDFあり' : 'PDFなし・リンクのみ')];
+function invoiceRecordAttachments_(fileName, sourceUrl, reactionName) {
+  return [slackPreviewAttachment_(
+    fileName || invoiceReactionPreviewTitle_(reactionName),
+    sourceUrl,
+    fileName ? 'PDFあり' : 'PDFなし・リンクのみ'
+  )];
+}
+
+function invoiceReactionPreviewTitle_(reactionName) {
+  var normalized = normalizeReactionName_(reactionName);
+  if (normalized === 'flying_saucer') {
+    return 'UFO付き元投稿';
+  }
+  if (!normalized || normalized === 'rocket') {
+    return 'ロケット付き元投稿';
+  }
+  return 'リアクション付き元投稿';
 }
 
 function slackPreviewAttachment_(title, titleLink, text) {

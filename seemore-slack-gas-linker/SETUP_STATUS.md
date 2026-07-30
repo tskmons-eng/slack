@@ -1,6 +1,32 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-27 19:23 JST
+Last updated: 2026-07-30 JST
+
+## 2026-07-30 UFO reaction forwarding
+
+- Implemented `invoice_forward_routes` with independent initial routes:
+  - `invoice_rocket / rocket / 依頼＿請求書`
+  - `payment_ufo / flying_saucer / 依頼_振込`
+- Both routes share the explicit five-source setting and inspect root posts plus thread replies through immediate Slack Events and hourly recovery.
+- PDF candidates keep the existing file-name/date plus source-link format; candidates without a PDF forward only the source link.
+- Duplicate history now includes the destination channel, so each route can forward the same source message once without cross-route suppression.
+- Scheduled scan state includes a route signature. Route changes force a rescan, and an incomplete scan restores the previous signature.
+- Source and target resolution is partial: an unresolved channel is recorded while other valid sources/routes continue.
+- Added protected route update, route-specific dry-run/run, channel recovery, and one-message recovery actions.
+- Local UTF-8 syntax and synthetic tests pass for route parsing, `flying_saucer` normalization, target-aware dedupe, legacy-row fallback, root/reply handling, route seeding, route disable input, route-signature changes, and partial source resolution.
+- Slack preflight confirmed `依頼_振込` (`C0BLT86MFQS`) contains `SEEMORE Vehicle Thread Linker`.
+- Slack preflight confirmed `依頼_引き継ぎ` (`C0B64F0HC5Q`) was archived on 2026-07-29. On 2026-07-30 the user explicitly chose to leave it archived and exclude it from active monitoring, so the production acceptance target is five sources.
+- Fixed the recovery cursor so an incremental new-message scan preserves the previous `last_full_scan_at`; frequent new roots can no longer postpone recovery of an older missed reaction indefinitely.
+- Migrated `INVOICE_FORCE_RESCAN_HOURS` from `3` to `1`, matching the hourly recovery requirement. Existing `6` or `3` values migrate to `1` during setup.
+- `scheduledMain()` now includes child-phase `error_count` values in its top-level audit count while still allowing other sources and routes to continue.
+- Published GAS version 74 to both the Slack Events Web App and API executable deployments.
+- Production status confirmed one `scheduledMain` trigger in `every_1_hours` mode, five configured/resolved sources, two enabled routes, `INVOICE_FORCE_RESCAN_HOURS=1`, and zero unresolved sources or targets.
+- Live UFO verification completed for a PDF root post, a link-only root post, and a thread reply. All three arrived in `依頼_振込`.
+- Slack Event Subscriptions was found disabled, re-enabled, saved, and rechecked as `Enable Events=On`, Request URL `Verified`, Delayed Events `On`, with Bot Events `reaction_added` and `message.groups`.
+- A fresh root UFO then arrived through the natural Slack Events path without a manual recovery call.
+- Removing and re-adding the test UFO did not add another target post. A version 74 Events replay returned `posted_count=0`, `duplicate_skipped_count=1`, and `error_count=0`.
+- Version 74 route dry-runs checked five sources, 30 root messages, and 241 replies. UFO found 4 existing candidates and rocket found 5; all were recognized as duplicates with zero errors.
+- The final version 74 `scheduledMain()` production run completed in 23 seconds with `completed=true`, `deadline_reached=false`, and `error_count=0`.
 
 ## 2026-07-27 Scheduled runtime recovery
 
@@ -214,7 +240,7 @@ Last updated: 2026-07-27 19:23 JST
 - Manual `?action=reaction_forward_run&confirm=RUN_REACTION_FORWARD` posted one copied assistant summary to `電話対応`: `posted_count=1`, `posted_ts=1783149157.319239`, `error_count=0`.
 - Web `?action=diagnostics` confirmed `reaction_forward_posts` contains the production row with `reaction_name=curly_loop`, target channel `電話対応`, and `dry_run=false`.
 
-## 2026-07-04 Slack Events Re-enabled
+## 2026-07-30 Slack Events Re-enabled
 
 - Chrome verification of Slack App `A0B9TSCGZAR` showed Event Subscriptions `Enable Events` was `Off`, while the Request URL matched the current GAS Events URL and was `Verified`.
 - Re-enabled Event Subscriptions from the Slack API UI and saved the app configuration.
@@ -225,8 +251,8 @@ Last updated: 2026-07-27 19:23 JST
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 51
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 51
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 74
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 74
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -244,11 +270,11 @@ Last updated: 2026-07-27 19:23 JST
 - `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.
 - `LOOKBACK_DAYS=60`.
 - Last verified `scheduledMain()` trigger count: 1.
-- Desired schedule: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
+- Verified schedule: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
 - `SLACK_BOT_TOKEN` is saved.
-- Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=10`; current verified test forwarded one PDF from a thread reply and then skipped the duplicate on the next dry run.
-- Invoice forwarding also supports rocket-marked messages without PDF files; those post the labeled source Slack link without forwarding a PDF file.
-- Desired invoice runtime guard: `INVOICE_MAX_RUNTIME_SECONDS=300`.
+- Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=25` and `INVOICE_FORCE_RESCAN_HOURS=1`.
+- `invoice_forward_routes` contains enabled `invoice_rocket` and `payment_ufo` routes. Both support root/reply messages, PDF forwarding, and link-only fallback.
+- Verified invoice runtime guard: `INVOICE_MAX_RUNTIME_SECONDS=300`.
 - Slack Events API is active for `reaction_added`; hourly polling remains as a backup.
 - Automatic internal Slack links use labeled text plus source-post attachment cards because Slack native unfurls can differ between manual shares and bot posts. Existing invoice posts were refreshed to the same format.
 

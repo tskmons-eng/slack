@@ -17,7 +17,7 @@
 
 ## Current Task: SEEMORE Slack 車案件 自動紐付けツール
 
-Slack 内の車案件スレッドを、車体番号またはスレIDの完全一致で自動紐付けする Google Apps Script 版を `seemore-slack-gas-linker/` に構築する。加えて、ロケットリアクション付き投稿を請求書チャンネルへ転送し、PDFがなければリンクのみで転送する。
+Slack 内の車案件スレッドを、車体番号またはスレIDの完全一致で自動紐付けする Google Apps Script 版を `seemore-slack-gas-linker/` に構築する。加えて、共通の5監視元でロケット／UFOリアクションを検出し、ルート別の依頼チャンネルへ転送する。PDFがなければリンクのみで転送する。
 
 ## Integration Notes
 
@@ -30,8 +30,8 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - 初期状態は必ず車案件側を `DRY_RUN=true` とし、誤投稿より未投稿を優先する。
 - スレIDは `スレID:` / `スレID：`、全角ID、小文字id、全角英数字、空白混在を正規化し、つながっていれば同じものとして扱う。
 - GAS トリガーで `scheduledMain()` を1時間ごとに実行し、PCを閉じていても動く構成にする。
-- Botが参加している全チャンネルを請求書ロケット監視候補にし、ロケットリアクション付き投稿を `依頼＿請求書` へ転送する。PDFがあれば `【ファイル名 今日の日付】` と元投稿リンク、PDFがなければ元投稿リンクのみを投稿する。
-- 請求書ロケット監視はチャンネル別に最終スキャン状態と件数を記録し、更新がないチャンネルはスキップする。後付けリアクション対策として、一定時間ごとに強制再スキャンする。
+- `carmore依頼`、`オールマシンサービス`、`依頼_all`、`依頼_車案件`、`依頼＿小売取引` の5チャンネルを共通監視元にする。`rocket` は `依頼＿請求書`、`flying_saucer` は `依頼_振込` へ転送する。アーカイブ済みの `依頼_引き継ぎ` は対象外とする。
+- 依頼リアクション監視はチャンネル別に最終スキャン状態、件数、ルート構成シグネチャを記録し、更新もルート変更もないチャンネルはスキップする。後付けリアクション対策として、一定時間ごとに強制再スキャンする。
 
 ## Work Items
 
@@ -41,8 +41,31 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 - `USER_PRIORITIES.md` を GAS 完結方針に更新する。
 - `Code.gs` を静的に構文確認する。
 - `clasp` でGoogleログイン、Apps Script API有効化、GASプロジェクト作成、push、デプロイを実行する。
-- `setup()` 実行後にスプレッドシート、`scheduledMain()` 3本トリガー、請求書転送設定を検証する。
+- `setup()` 実行後にスプレッドシート、`scheduledMain()` の毎時トリガー1本、依頼リアクション転送設定を検証する。
 - 変更を Git commit し、可能な場合は push する。
+
+## 2026-07-30 UFO Reaction Forwarding
+
+- 既存ロケットを残し、`invoice_forward_routes` で複数ルートを管理する。
+- 初期ルートは `invoice_rocket / rocket / 依頼＿請求書` と `payment_ufo / flying_saucer / 依頼_振込`。
+- 両ルートは同じ5監視元を使い、親投稿と返信の両方をSlack Eventsの即時処理と毎時回収で確認する。
+- PDFありは `【PDF名 今日の日付】` と元投稿リンク、PDFなしは元投稿リンクだけを投稿する。
+- 重複キーへ転送先IDを含め、同じ元投稿でもルートごとに一度だけ転送する。
+- 監視元または転送先の1件が未解決でも他を継続し、未解決名を診断へ残す。
+- ルート構成シグネチャが変わった場合は、最新投稿が変わっていないチャンネルも再スキャンする。
+- Web管理にはルート更新、`route_name` 指定dry-run／本番実行、指定投稿1件の回収を用意する。
+- 合成テスト、UFOのPDFあり／なし／返信、付け直し時の二重防止、ロケット回帰、Slack Events、毎時トリガー、5監視元を本番で確認する。
+- `clasp push` 後にGASバージョンを作成し、既存のセットアップ用Web AppとAPI executableの2デプロイを同じバージョンへ更新する。
+
+実施結果:
+
+- GAS version 74をセットアップ用Web AppとAPI executableへ反映した。
+- アーカイブ済み `依頼_引き継ぎ` を除く5監視元、2ルート、転送先・監視元の未解決0、毎時トリガー1本を本番で確認した。
+- UFOのPDFあり親投稿、PDFなし親投稿、返信を `依頼_振込` へ転送し、Slack Eventsからの自然到着も確認した。
+- UFOの付け直しとEvents再送は `duplicate_skipped_count=1`、`posted_count=0` となり、転送先へ増えないことを確認した。
+- ロケット／UFOのルート別dry-runはともに5監視元、30親投稿、241返信、エラー0で完了し、既存候補はすべて重複として抑止した。
+- `INVOICE_FORCE_RESCAN_HOURS=1` へ移行し、差分スキャンでは `last_full_scan_at` を更新しないようにして、後付けリアクションの毎時回収を維持した。
+- version 74の `scheduledMain()` は23秒、`completed=true`、`deadline_reached=false`、`error_count=0` で完了した。
 
 ## Previous Completed Task
 
@@ -83,7 +106,7 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 ## 2026-06-14 Invoice Monitoring Hardening
 
-- 旧デフォルトの `INVOICE_LOOKBACK_DAYS=7`、`INVOICE_HISTORY_LIMIT=50`、`INVOICE_REPLY_THREAD_LIMIT=10`、`INVOICE_FORCE_RESCAN_HOURS=6` は、次回実行時に `30`、`100`、`25`、`3` へ自動移行する。
+- 旧デフォルトの `INVOICE_LOOKBACK_DAYS=7`、`INVOICE_HISTORY_LIMIT=50`、`INVOICE_REPLY_THREAD_LIMIT=10` は、次回実行時に `30`、`100`、`25` へ自動移行する。`INVOICE_FORCE_RESCAN_HOURS=6` または旧運用値 `3` は、毎時回収のため `1` へ自動移行する。
 - `INVOICE_HISTORY_PAGE_LIMIT=3` を追加し、新着検知時は前回最新ts以降、初回/強制再スキャン時はlookback範囲を最大3ページまで追う。
 - 既存の5本トリガーが残っていても、次回 `scheduledMain()` 実行時に期待トリガー数と違えば `MAIN_TRIGGER_INTERVAL_HOURS=1` の毎時トリガーへ作り直す。
 - Slack Events API用に `doPost` の `reaction_added` 受け口を追加する。利用にはWebアプリをSlackから到達できる公開設定にし、`SLACK_EVENT_REQUEST_TOKEN` 付きRequest URLをSlack側へ設定する必要がある。
@@ -91,10 +114,10 @@ Slack 内の車案件スレッドを、車体番号またはスレIDの完全一
 
 ## 2026-06-14 Invoice Monitoring Assumptions and Limits
 
-- 実運用の請求書ロケット監視元は約6チャンネルで、現状は絞り込みにくい。
-- 新規投稿は少なく、古い投稿のスレッド返信にコメントして `rocket` を押す使い方が多い。
+- 2026-07-30以降の実運用監視元は、アーカイブ済み `依頼_引き継ぎ` を除いた5チャンネルとする。
+- 新規投稿は少なく、古い投稿またはその返信へ `rocket` / `flying_saucer` を後から押す使い方がある。
 - 1時間以内の転送は許容範囲だが、未転送も誤転送も避ける必要がある。
-- 請求書ロケットはSlack Events APIの `reaction_added` で即時転送し、1時間ポーリングを保険として残す構成が望ましい。
+- ロケット／UFOはSlack Events APIの `reaction_added` で即時転送し、1時間ポーリングを保険として残す。
 - 車体番号/スレID紐付けは過去スレッドとの照合が必要なため、Slack Events APIだけに置き換えず定期クロールを継続する。
 - `INVOICE_MAX_RUNTIME_SECONDS=300` を追加し、GASの1実行6分上限に近づく前に途中停止する。残ったチャンネルは最終確認時刻順で次回優先する。
 - Slack APIがHTTP 429を返した場合は `Retry-After` を最大30秒まで待って1回再試行する。
