@@ -14,6 +14,7 @@ var SCHEDULED_VEHICLE_LINK_MAX_THREADS_PER_CHANNEL = 20;
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var INVOICE_RUNTIME_SAFETY_SECONDS = 120;
 var INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_SOURCE_CHANNELS';
+var VEHICLE_LINK_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_VEHICLE_LINK_CHANNELS';
 var INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_FORWARD_ROUTE';
 var REACTION_FORWARD_CONFIRM_TOKEN = 'RUN_REACTION_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
@@ -33,7 +34,7 @@ var DEFAULT_SETTINGS = {
   SLACK_EVENT_REQUEST_TOKEN: '',
   WEB_ADMIN_TOKEN: '',
   PARENT_CHANNEL_NAME: '依頼_車案件',
-  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス',
+  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込',
   LOOKBACK_DAYS: '60',
   DRY_RUN: 'true',
   MAIN_TRIGGER_HOURS: '3,10,13,16,20',
@@ -244,6 +245,14 @@ function doGet(event) {
     var invoiceSourceChannelConfirm = stringValue_(event.parameter.confirm || '');
     return jsonOutput_(runJsonAction_(function() {
       return updateInvoiceSourceChannels_(invoiceSourceChannelNames, invoiceSourceChannelConfirm);
+    }));
+  }
+
+  if (action === 'set_vehicle_link_channels') {
+    var vehicleLinkChildChannelNames = stringValue_(event.parameter.child_channel_names || '');
+    var vehicleLinkChannelConfirm = stringValue_(event.parameter.confirm || '');
+    return jsonOutput_(runJsonAction_(function() {
+      return updateVehicleLinkChannels_(vehicleLinkChildChannelNames, vehicleLinkChannelConfirm);
     }));
   }
 
@@ -1686,6 +1695,55 @@ function updateInvoiceSourceChannels_(channelNamesValue, confirm) {
     target_channel_names: targetChannels.map(function(channel) {
       return channel.name;
     }).join(',')
+  };
+}
+
+function updateVehicleLinkChannels_(childChannelNamesValue, confirm) {
+  if (confirm !== VEHICLE_LINK_CHANNEL_UPDATE_CONFIRM_TOKEN) {
+    throw new Error('車案件リンク対象の更新には confirm=' + VEHICLE_LINK_CHANNEL_UPDATE_CONFIRM_TOKEN + ' が必要です。');
+  }
+
+  var names = parseCommaSeparatedSetting_(childChannelNamesValue);
+  if (!names.length) {
+    throw new Error('車案件リンク対象のchild_channel_namesを1件以上指定してください。');
+  }
+
+  var settings = getSettings();
+  var parentChannel = getChannelByName_(settings.parentChannelName);
+  if (parentChannel.is_member === false) {
+    throw new Error('Botが親チャンネルに参加していません: ' + settings.parentChannelName);
+  }
+
+  var childChannels = names.map(function(name) {
+    var channel = getChannelByName_(name);
+    if (channel.is_member === false) {
+      throw new Error('Botが参加していないチャンネルです: ' + name);
+    }
+    if (channel.id === parentChannel.id) {
+      throw new Error('親チャンネルは子チャンネルに指定できません: ' + name);
+    }
+    return channel;
+  });
+
+  var spreadsheet = createSheets();
+  var settingsSheet = spreadsheet.getSheetByName('settings');
+  upsertSetting_(
+    settingsSheet,
+    'CHILD_CHANNEL_NAMES',
+    names.join(','),
+    settingMemo_('CHILD_CHANNEL_NAMES')
+  );
+
+  return {
+    parent_channel_name: parentChannel.name,
+    parent_channel_id: parentChannel.id,
+    updated_child_channel_names: names.join(','),
+    child_channels: childChannels.map(function(channel) {
+      return {
+        name: channel.name,
+        id: channel.id
+      };
+    })
   };
 }
 
@@ -5284,7 +5342,10 @@ function testResolveVinGroups() {
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
-    {name: 'オールマシンサービス', id: 'CHILD_ALLMACHINE'}
+    {name: 'オールマシンサービス', id: 'CHILD_ALLMACHINE'},
+    {name: '依頼_all', id: 'CHILD_REQUEST_ALL'},
+    {name: '電話対応', id: 'CHILD_PHONE'},
+    {name: '依頼_振込', id: 'CHILD_PAYMENT'}
   ];
   var threads = [
     testThread_('PARENT', '依頼_車案件', '100.000001', ['ABC123'], 'https://slack.test/parent-old'),
@@ -5292,6 +5353,9 @@ function testResolveVinGroups() {
     testThread_('CHILD_CARMORE', 'carmore依頼', '150.000001', ['ABC123'], 'https://slack.test/carmore-old'),
     testThread_('CHILD_CARMORE', 'carmore依頼', '250.000001', ['ABC123'], 'https://slack.test/carmore-new'),
     testThread_('CHILD_ALLMACHINE', 'オールマシンサービス', '175.000001', ['ABC123'], 'https://slack.test/allmachine-old'),
+    testThread_('CHILD_REQUEST_ALL', '依頼_all', '176.000001', ['ABC123'], 'https://slack.test/request-all'),
+    testThread_('CHILD_PHONE', '電話対応', '177.000001', ['ABC123'], 'https://slack.test/phone'),
+    testThread_('CHILD_PAYMENT', '依頼_振込', '178.000001', ['ABC123'], 'https://slack.test/payment'),
     testThread_('CHILD_CARMORE', 'carmore依頼', '300.000001', ['ABC1234'], 'https://slack.test/partial-match'),
     testThread_('PARENT', '依頼_車案件', '400.000001', [], 'https://slack.test/thread-id-parent', ['案件ABC123']),
     testThread_('CHILD_CARMORE', 'carmore依頼', '450.000001', [], 'https://slack.test/thread-id-child', ['案件 abc１２３'])
@@ -5312,10 +5376,19 @@ function testResolveVinGroups() {
   assertTest_(groups.childGroups[0].representative.url === 'https://slack.test/carmore-old', 'oldest carmore thread must be representative');
   assertTest_(groups.childGroups[0].duplicates.length === 1, 'newer carmore duplicate must be separated');
   assertTest_(groups.childGroups[1].representative.url === 'https://slack.test/allmachine-old', 'allmachine representative must be selected');
+  assertTest_(groups.childGroups[2].representative.url === 'https://slack.test/request-all', 'request all representative must be selected');
+  assertTest_(groups.childGroups[3].representative.url === 'https://slack.test/phone', 'phone representative must be selected');
+  assertTest_(groups.childGroups[4].representative.url === 'https://slack.test/payment', 'payment representative must be selected');
   assertTest_(actions.filter(function(action) { return action.relationType === 'parent_duplicate'; }).length === 1, 'parent duplicate action count');
   assertTest_(actions.filter(function(action) { return action.relationType === 'same_channel_duplicate'; }).length === 1, 'same channel duplicate action count');
-  assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 2, 'child to parent action count');
+  assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 5, 'child to parent action count');
   assertTest_(actions.every(function(action) { return action.source.url !== 'https://slack.test/partial-match'; }), 'partial VIN match must not be included');
+  assertTest_(
+    JSON.stringify(parseCommaSeparatedSetting_(DEFAULT_SETTINGS.CHILD_CHANNEL_NAMES)) === JSON.stringify(childChannels.map(function(channel) {
+      return channel.name;
+    })),
+    'default child channel configuration must include all five targets'
+  );
 
   var threadIdGroups = resolveLinkKeyGroupsFromChannels_(makeLinkKey_('thread_id', '案件ABC123'), threads, parentChannelId, childChannels);
   var threadIdActions = buildLinkActions_(threadIdGroups);
@@ -5327,6 +5400,9 @@ function testResolveVinGroups() {
   return {
     ok: true,
     actions: actionSummary,
+    child_channel_names: childChannels.map(function(channel) {
+      return channel.name;
+    }),
     thread_id_actions: threadIdActions.map(function(action) {
       return {
         relationType: action.relationType,

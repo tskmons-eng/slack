@@ -16,6 +16,9 @@ Slack内の車案件スレッドを、車体番号またはスレIDの完全一�
 
 - `carmore依頼`
 - `オールマシンサービス`
+- `依頼_all`
+- `電話対応`
+- `依頼_振込`
 
 ## 仕組み
 
@@ -223,7 +226,7 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `SLACK_EVENT_REQUEST_TOKEN` | 自動生成 | Slack Events APIのRequest URLに付ける共有トークンです。URLへ `slack_event_token` として付けます。 |
 | `WEB_ADMIN_TOKEN` | 自動生成 | 公開Webアプリの管理操作に必要なトークンです。URLへ `admin_token` として付けます。 |
 | `PARENT_CHANNEL_NAME` | `依頼_車案件` | 大親チャンネル名です。 |
-| `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス` | 子チャンネル名をカンマ区切りで指定します。 |
+| `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |
 | `DRY_RUN` | `true` | `true` の間は車案件の自動紐付けをSlackへ投稿しません。 |
 | `MAIN_TRIGGER_HOURS` | `3,10,13,16,20` | `MAIN_TRIGGER_INTERVAL_HOURS` を空にした場合だけ使う日次実行時刻です。 |
@@ -283,6 +286,8 @@ Apps Script上で以下を実行できます。
   - 毎時処理を手動実行します。請求書とリアクションの取りこぼし確認を先に行い、車両監視と車案件リンク確認を残り時間で実行します。
 - `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
   - `channel_name` を指定すると、対象チャンネルだけを診断します。
+- `?action=set_vehicle_link_channels&child_channel_names=carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込&confirm=UPDATE_VEHICLE_LINK_CHANNELS`
+  - 車体番号／スレIDの紐付け対象となる子チャンネルを更新します。全チャンネルにBotが参加済みで、親チャンネルと重複しない場合だけ保存します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
   - 既知の子スレッドと親スレッドを再読し、両方に共通する車体番号またはスレIDがある場合だけ投稿予定を確認します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=false&confirm=RUN_PRODUCTION`

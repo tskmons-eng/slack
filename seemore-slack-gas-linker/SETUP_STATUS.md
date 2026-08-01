@@ -1,6 +1,17 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-07-30 JST
+Last updated: 2026-08-01 18:58 JST
+
+## 2026-08-01 Vehicle link channel expansion
+
+- Added `依頼_all` (`C0APZAXLYGK`), `電話対応` (`C0BF7K48W8L`), and `依頼_振込` (`C0BLT86MFQS`) as vehicle/thread-link child channels while retaining `carmore依頼` and `オールマシンサービス`.
+- The parent remains `依頼_車案件` (`C0AUXCQ58LU`). `依頼_振込` keeps its existing UFO forwarding destination role; only the independent vehicle-link scan scope was expanded.
+- Added the admin-protected `set_vehicle_link_channels` action. It validates Bot membership for every child and rejects the parent as a child before updating `CHILD_CHANNEL_NAMES`.
+- Local UTF-8 syntax and synthetic tests passed with `ok=true`, `actions=7`, `thread_id_actions=1`, and all five child channel names. The isolated management-action test also passed with `child_count=5`.
+- Pushed the source to Apps Script and published GAS version 75 to both the Slack Events Web App and API executable deployments.
+- The production setting update returned `ok=true` and resolved all five child channels to the expected Slack IDs.
+- A production dry run using the scheduled vehicle-link bounds (`lookback_days=60`, `max_threads_per_channel=20`) completed with 3 parent threads checked, 2 link keys, 1 child match, 2 planned posts, `posted_count=0`, `deadline_reached=false`, `channels_deferred=0`, and `error_count=0`.
+- Final production status confirmed `DRY_RUN=true`, the five-child setting, one hourly `scheduledMain` trigger, and both existing invoice/UFO routes still enabled. Vehicle-link matching is healthy, but automatic Slack posting remains intentionally disabled until the user explicitly changes `DRY_RUN=false`.
 
 ## 2026-07-30 UFO reaction forwarding
 
