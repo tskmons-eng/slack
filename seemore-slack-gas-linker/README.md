@@ -148,7 +148,7 @@ chat:write
 8. Apps Scriptで `setup()` を一度実行し、Google認証ポップアップを許可する。
 9. 作成されたスプレッドシートの `settings` シートへ `SLACK_BOT_TOKEN` を入力する。
 10. `testSlackAuth()`、`testFindChannels()`、`testDryRunOnce()` を実行して確認する。
-11. `dry_run_logs` を確認し、問題なければ `settings` シートの `DRY_RUN` を `false` にする。
+11. `dry_run_logs` を確認し、問題なければ管理アクションまたは `settings` シートで `DRY_RUN` を `false` にする。
 
 Codexから `clasp` で配置する場合は、GASをWebアプリとしてデプロイし、`/exec?action=setup&admin_token=...` を開いて `setup()` を実行できます。Webアプリ設定はSlack Events API用に `ANYONE_ANONYMOUS` / `USER_DEPLOYING` です。管理系アクションには `settings` シートの `WEB_ADMIN_TOKEN` を `admin_token` パラメータとして付けます。
 
@@ -288,6 +288,10 @@ Apps Script上で以下を実行できます。
   - `channel_name` を指定すると、対象チャンネルだけを診断します。
 - `?action=set_vehicle_link_channels&child_channel_names=carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込&confirm=UPDATE_VEHICLE_LINK_CHANNELS`
   - 車体番号／スレIDの紐付け対象となる子チャンネルを更新します。全チャンネルにBotが参加済みで、親チャンネルと重複しない場合だけ保存します。
+- `?action=set_vehicle_link_mode&dry_run=false&confirm=UPDATE_VEHICLE_LINK_MODE`
+  - 車案件リンクの自動投稿を有効化します。`dry_run=true` を指定すると再び投稿停止へ戻せます。
+- `?action=vehicle_link_run&lookback_days=60&max_threads_per_channel=20&confirm=RUN_VEHICLE_LINK`
+  - 請求書／汎用リアクション処理を実行せず、車体番号／スレIDの紐付けだけを本番実行します。`DRY_RUN=false` の時だけ動作します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=true`
   - 既知の子スレッドと親スレッドを再読し、両方に共通する車体番号またはスレIDがある場合だけ投稿予定を確認します。
 - `?action=link_threads&source_channel_name=...&source_thread_ts=...&target_thread_ts=...&dry_run=false&confirm=RUN_PRODUCTION`
@@ -355,11 +359,11 @@ Apps Script上で以下を実行できます。
 
 ## 本番化
 
-`dry_run_logs` に問題がない場合だけ、`settings` シートの `DRY_RUN` を `false` に変更します。
+`dry_run_logs` に問題がない場合だけ、管理アクション `?action=set_vehicle_link_mode&dry_run=false&confirm=UPDATE_VEHICLE_LINK_MODE` または `settings` シートで `DRY_RUN` を `false` に変更します。
 
 以降、1時間ごとの `scheduledMain()` 実行で請求書・汎用リアクションの取りこぼし確認、車両監視、車案件の紐付けを処理します。
 
-車案件だけを手動で本番実行する場合は `runProduction()` を実行します。`runProduction()` は `DRY_RUN=false` になっていない場合は停止します。
+車案件だけを手動で本番実行する場合は、管理アクション `?action=vehicle_link_run&lookback_days=60&max_threads_per_channel=20&confirm=RUN_VEHICLE_LINK` またはApps Script上の `runProduction()` を使います。どちらも `DRY_RUN=false` になっていない場合は停止します。
 
 ## シート構成
 

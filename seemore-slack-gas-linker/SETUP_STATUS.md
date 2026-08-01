@@ -1,6 +1,19 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-08-01 18:58 JST
+Last updated: 2026-08-02 00:30 JST
+
+## 2026-08-02 Vehicle link automatic posting
+
+- Added admin-token-protected, confirmation-token-gated actions to change only the vehicle-link `DRY_RUN` setting and to run only vehicle/thread linking without invoking invoice, UFO, generic reaction, or vehicle-monitoring phases.
+- Changed the production setting from `DRY_RUN=true` to `DRY_RUN=false`. The parent remains `依頼_車案件`; all five configured children remain `carmore依頼`, `オールマシンサービス`, `依頼_all`, `電話対応`, and `依頼_振込`.
+- The pre-switch 60-day, 20-threads-per-channel dry run checked 3 parent threads, found 2 link keys and 1 child match, planned 2 posts, and finished with zero errors, no deferred channels, and no deadline stop.
+- The production-only run posted 2 Slack replies with zero errors: one same-VIN parent-thread link and one `電話対応` related-request link. Slack search visibly confirmed both app posts at 00:17 JST on 2026-08-02.
+- Immediate repeated production runs posted 0 additional replies and skipped both actions as duplicates (`duplicate_skipped_count=2`, `error_count=0`).
+- Added a `ScriptLock` around the final duplicate recheck, Slack post, and `linked_threads` save so an hourly `scheduledMain()` and a manual vehicle-link run cannot pass the duplicate check concurrently.
+- Local UTF-8 syntax, full synthetic link-logic tests, locked-post static verification, and `git diff --check` passed. A second code review found no remaining P1/P2 issue.
+- Pushed the source and published GAS version 77 to both the Slack Events Web App and API executable deployments.
+- The deployed version 77 Web logic test returned `ok=true`, `actions=7`, `thread_id_actions=1`, and all five configured child channel names.
+- Final production status confirmed `DRY_RUN=false`, one hourly `scheduledMain` trigger, and both existing invoice/UFO routes still enabled. No unrelated routing setting was changed.
 
 ## 2026-08-01 Vehicle link channel expansion
 

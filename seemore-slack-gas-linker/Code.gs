@@ -15,6 +15,8 @@ var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var INVOICE_RUNTIME_SAFETY_SECONDS = 120;
 var INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_SOURCE_CHANNELS';
 var VEHICLE_LINK_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_VEHICLE_LINK_CHANNELS';
+var VEHICLE_LINK_MODE_UPDATE_CONFIRM_TOKEN = 'UPDATE_VEHICLE_LINK_MODE';
+var VEHICLE_LINK_RUN_CONFIRM_TOKEN = 'RUN_VEHICLE_LINK';
 var INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_FORWARD_ROUTE';
 var REACTION_FORWARD_CONFIRM_TOKEN = 'RUN_REACTION_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
@@ -253,6 +255,27 @@ function doGet(event) {
     var vehicleLinkChannelConfirm = stringValue_(event.parameter.confirm || '');
     return jsonOutput_(runJsonAction_(function() {
       return updateVehicleLinkChannels_(vehicleLinkChildChannelNames, vehicleLinkChannelConfirm);
+    }));
+  }
+
+  if (action === 'set_vehicle_link_mode') {
+    var vehicleLinkDryRunValue = stringValue_(event.parameter.dry_run || '');
+    var vehicleLinkModeConfirm = stringValue_(event.parameter.confirm || '');
+    return jsonOutput_(runJsonAction_(function() {
+      return updateVehicleLinkMode_(vehicleLinkDryRunValue, vehicleLinkModeConfirm);
+    }));
+  }
+
+  if (action === 'vehicle_link_run') {
+    var vehicleLinkRunLookbackDays = parsePositiveInteger_(event.parameter.lookback_days, 0);
+    var vehicleLinkRunMaxThreads = parsePositiveInteger_(event.parameter.max_threads_per_channel, 0);
+    var vehicleLinkRunConfirm = stringValue_(event.parameter.confirm || '');
+    return jsonOutput_(runJsonAction_(function() {
+      return runVehicleLinkProductionNow_(
+        vehicleLinkRunLookbackDays || null,
+        vehicleLinkRunMaxThreads || null,
+        vehicleLinkRunConfirm
+      );
     }));
   }
 
@@ -1745,6 +1768,54 @@ function updateVehicleLinkChannels_(childChannelNamesValue, confirm) {
       };
     })
   };
+}
+
+function updateVehicleLinkMode_(dryRunValue, confirm) {
+  if (confirm !== VEHICLE_LINK_MODE_UPDATE_CONFIRM_TOKEN) {
+    throw new Error('車案件リンクモードの更新には confirm=' + VEHICLE_LINK_MODE_UPDATE_CONFIRM_TOKEN + ' が必要です。');
+  }
+
+  var dryRun = parseVehicleLinkDryRunSetting_(dryRunValue);
+  var settingsSheet = getManagedSheet_('settings');
+  upsertSetting_(settingsSheet, 'DRY_RUN', String(dryRun), settingMemo_('DRY_RUN'));
+
+  return {
+    dry_run: dryRun,
+    automatic_posting_enabled: !dryRun,
+    parent_channel_name: getSettings().parentChannelName
+  };
+}
+
+function parseVehicleLinkDryRunSetting_(value) {
+  var normalized = normalizeUnicode_(value).trim().toLowerCase();
+  if (normalized !== 'true' && normalized !== 'false') {
+    throw new Error('dry_runはtrueまたはfalseで指定してください。');
+  }
+  return normalized === 'true';
+}
+
+function runVehicleLinkProductionNow_(lookbackDaysOverride, maxThreadsPerChannel, confirm) {
+  if (confirm !== VEHICLE_LINK_RUN_CONFIRM_TOKEN) {
+    throw new Error('車案件リンクの手動本番実行には confirm=' + VEHICLE_LINK_RUN_CONFIRM_TOKEN + ' が必要です。');
+  }
+
+  var settings = getSettings();
+  assertVehicleLinkProductionEnabled_(settings);
+
+  var startedAtMs = Date.now();
+  return runWithMode_(
+    false,
+    null,
+    lookbackDaysOverride || settings.lookbackDays,
+    maxThreadsPerChannel || SCHEDULED_VEHICLE_LINK_MAX_THREADS_PER_CHANNEL,
+    startedAtMs + SCHEDULED_MAX_RUNTIME_SECONDS * 1000
+  );
+}
+
+function assertVehicleLinkProductionEnabled_(settings) {
+  if (!settings || settings.dryRun) {
+    throw new Error('本番投稿するには先にDRY_RUN=falseへ変更してください。');
+  }
 }
 
 function deleteTriggers() {
@@ -5339,6 +5410,7 @@ function testResolveVinGroups() {
   testInvoiceForwardRoutes_();
   testReactionForwarding_();
   testScheduledRuntimeGuards_();
+  testVehicleLinkProductionControls_();
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
@@ -5412,6 +5484,43 @@ function testResolveVinGroups() {
       };
     })
   };
+}
+
+function testVehicleLinkProductionControls_() {
+  assertTest_(parseVehicleLinkDryRunSetting_('true') === true, 'vehicle link dry-run true must parse');
+  assertTest_(parseVehicleLinkDryRunSetting_(' FALSE ') === false, 'vehicle link dry-run false must parse');
+  var invalidRejected = false;
+  try {
+    parseVehicleLinkDryRunSetting_('yes');
+  } catch (error) {
+    invalidRejected = true;
+  }
+  assertTest_(invalidRejected, 'vehicle link dry-run mode must reject ambiguous values');
+
+  var modeConfirmRejected = false;
+  try {
+    updateVehicleLinkMode_('false', 'WRONG_CONFIRM');
+  } catch (error) {
+    modeConfirmRejected = true;
+  }
+  assertTest_(modeConfirmRejected, 'vehicle link mode update must require its confirmation token');
+
+  var runConfirmRejected = false;
+  try {
+    runVehicleLinkProductionNow_(60, 20, 'WRONG_CONFIRM');
+  } catch (error) {
+    runConfirmRejected = true;
+  }
+  assertTest_(runConfirmRejected, 'vehicle link production run must require its confirmation token');
+
+  var dryRunRejected = false;
+  try {
+    assertVehicleLinkProductionEnabled_({dryRun: true});
+  } catch (error) {
+    dryRunRejected = true;
+  }
+  assertTest_(dryRunRejected, 'vehicle link production run must reject DRY_RUN=true');
+  assertVehicleLinkProductionEnabled_({dryRun: false});
 }
 
 function testScheduledRuntimeGuards_() {
@@ -5676,12 +5785,7 @@ function executeLinkAction_(action, dryRun, stats) {
     }
     stats.plannedKeys[key] = true;
 
-    if (isAlreadyLinked(action.target.channelId, action.target.threadTs, sourceUrl, targetUrl)) {
-      stats.duplicate_skipped_count += 1;
-      return;
-    }
-
-    if (threadAlreadyContainsUrl(action.target.channelId, action.target.threadTs, sourceUrl)) {
+    if (vehicleLinkActionAlreadyExists_(action, sourceUrl, targetUrl)) {
       stats.duplicate_skipped_count += 1;
       return;
     }
@@ -5715,12 +5819,34 @@ function executeLinkAction_(action, dryRun, stats) {
       return;
     }
 
-    postThreadMessage(action.target.channelId, action.target.threadTs, action.text, linkActionAttachments_(action, sourceUrl));
-    saveLinkedThread(record);
-    stats.posted_count += 1;
+    withVehicleLinkPostLock_(function() {
+      if (vehicleLinkActionAlreadyExists_(action, sourceUrl, targetUrl)) {
+        stats.duplicate_skipped_count += 1;
+        return;
+      }
+
+      postThreadMessage(action.target.channelId, action.target.threadTs, action.text, linkActionAttachments_(action, sourceUrl));
+      saveLinkedThread(record);
+      stats.posted_count += 1;
+    });
   } catch (error) {
     stats.error_count += 1;
     saveError('executeLinkAction:' + action.relationType + ':' + action.vin, error);
+  }
+}
+
+function vehicleLinkActionAlreadyExists_(action, sourceUrl, targetUrl) {
+  return isAlreadyLinked(action.target.channelId, action.target.threadTs, sourceUrl, targetUrl)
+    || threadAlreadyContainsUrl(action.target.channelId, action.target.threadTs, sourceUrl);
+}
+
+function withVehicleLinkPostLock_(callback) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
   }
 }
 
