@@ -1,6 +1,18 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-08-02 00:30 JST
+Last updated: 2026-08-02 19:19 JST
+
+## 2026-08-02 Managed log capacity hardening
+
+- The earlier inspection read only the first 1,000 `slack_reaction_events` rows and incorrectly suggested logging had stopped after 2026-07-13. A full tail check confirmed 1,789 existing rows through 2026-08-02 18:59 JST; no event-log data had stopped or been lost.
+- The sheet nevertheless had no spare grid rows (`last_row=1789`, `max_rows=1789`). All eight append-only managed sheets now use one append helper that adds a 500-row reserve before writing when the grid is full. Existing rows are never deleted.
+- Added the admin-token-protected, confirmation-token-gated `ensure_log_capacity` action for proactive capacity repair. The `status` response now reports `last_row`, `max_rows`, and `available_rows` for every managed sheet.
+- Local UTF-8 syntax and the full synthetic logic suite passed, including focused checks that a full sheet expands by 500 rows and a sheet with spare capacity remains unchanged. A separate read-only review found no routing or duplicate-prevention regression.
+- Published GAS version 78 to both the Slack Events Web App and API executable deployments.
+- Production capacity repair retained all 1,789 event rows and expanded only `slack_reaction_events` to 2,289 rows with 500 rows available. The other seven append-only sheets already had at least 500 free rows and were not changed.
+- The production event tail showed one rocket forwarded at 18:18 with `posted_count=1`, followed by three duplicate events with `posted_count=0`, `duplicate_skipped_count=1`, and `error_count=0`.
+- The first hourly run after version 78 started at 19:17:37 and completed in 58 seconds with `completed=true`, `deadline_reached=false`, `error_count=0`, and no deferred invoice work.
+- Final production status confirmed one hourly trigger, five explicit invoice sources, and both enabled routes unchanged: `invoice_rocket / rocket / 依頼＿請求書` and `payment_ufo / flying_saucer / 依頼_振込`.
 
 ## 2026-08-02 Vehicle link automatic posting
 

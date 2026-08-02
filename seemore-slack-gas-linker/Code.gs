@@ -21,6 +21,7 @@ var INVOICE_FORWARD_ROUTE_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_FORWARD_ROUTE';
 var REACTION_FORWARD_CONFIRM_TOKEN = 'RUN_REACTION_FORWARD';
 var SCHEDULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_SCHEDULE';
 var REACTION_FORWARD_RULE_UPDATE_CONFIRM_TOKEN = 'UPDATE_REACTION_FORWARD_RULE';
+var MANAGED_LOG_CAPACITY_CONFIRM_TOKEN = 'ENSURE_LOG_CAPACITY';
 var ADMIN_TOKEN_PARAM = 'admin_token';
 var SLACK_EVENT_TOKEN_PARAM = 'slack_event_token';
 var REACTION_FORWARD_DEFAULT_HISTORY_LIMIT = 100;
@@ -28,6 +29,17 @@ var REACTION_FORWARD_DEFAULT_LOOKBACK_DAYS = 30;
 var REACTION_FORWARD_MAX_TEXT_LENGTH = 39000;
 var REACTION_FORWARD_MAX_BLOCK_COUNT = 50;
 var REACTION_FORWARD_MAX_REPLY_COUNT = 20;
+var MANAGED_SHEET_APPEND_RESERVE_ROWS = 500;
+var APPEND_ONLY_MANAGED_SHEET_NAMES = [
+  'linked_threads',
+  'run_logs',
+  'scheduled_run_logs',
+  'errors',
+  'dry_run_logs',
+  'reaction_forward_posts',
+  'invoice_reaction_posts',
+  'slack_reaction_events'
+];
 
 var DEFAULT_SETTINGS = {
   SLACK_BOT_TOKEN: '',
@@ -225,6 +237,13 @@ function doGet(event) {
 
   if (action === 'status') {
     return jsonOutput_(getSetupStatus_());
+  }
+
+  if (action === 'ensure_log_capacity') {
+    var managedLogCapacityConfirm = stringValue_(event.parameter.confirm || '');
+    return jsonOutput_(runJsonAction_(function() {
+      return ensureManagedLogCapacityNow_(managedLogCapacityConfirm);
+    }));
   }
 
   if (action === 'scheduled_run') {
@@ -1334,7 +1353,10 @@ function getSetupStatus_() {
       var sheet = spreadsheet.getSheetByName(sheetName);
       status.sheets[sheetName] = {
         exists: Boolean(sheet),
-        header_ok: sheet ? headerMatches_(sheet, SHEET_HEADERS[sheetName]) : false
+        header_ok: sheet ? headerMatches_(sheet, SHEET_HEADERS[sheetName]) : false,
+        last_row: sheet ? sheet.getLastRow() : 0,
+        max_rows: sheet ? sheet.getMaxRows() : 0,
+        available_rows: sheet ? Math.max(sheet.getMaxRows() - sheet.getLastRow(), 0) : 0
       };
     });
 
@@ -4309,7 +4331,6 @@ function withReactionForwardPostLock_(callback) {
 }
 
 function saveReactionForwardPost_(record) {
-  var sheet = getManagedSheet_('reaction_forward_posts');
   var row = [
     record.processed_at || nowIso_(),
     record.rule_name || '',
@@ -4331,9 +4352,7 @@ function saveReactionForwardPost_(record) {
   ].map(function(value) {
     return stringValue_(value);
   });
-  var rowIndex = sheet.getLastRow() + 1;
-  sheet.getRange(rowIndex, 1, 1, row.length).setNumberFormat('@');
-  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+  appendManagedSheetRow_('reaction_forward_posts', row, true);
 }
 
 function isReactionForwardAlreadyPosted_(ruleName, sourceChannelId, sourceMessageTs, reactionName, targetChannelId) {
@@ -4517,7 +4536,6 @@ function threadAlreadyContainsUrl(channelId, threadTs, url) {
 }
 
 function saveLinkedThread(record) {
-  var sheet = getManagedSheet_('linked_threads');
   var row = [
     record.linked_at || nowIso_(),
     record.vin || '',
@@ -4535,14 +4553,11 @@ function saveLinkedThread(record) {
   ].map(function(value) {
     return stringValue_(value);
   });
-  var rowIndex = sheet.getLastRow() + 1;
-  sheet.getRange(rowIndex, 1, 1, row.length).setNumberFormat('@');
-  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+  appendManagedSheetRow_('linked_threads', row, true);
 }
 
 function saveRunLog(record) {
-  var sheet = getManagedSheet_('run_logs');
-  sheet.appendRow([
+  appendManagedSheetRow_('run_logs', [
     record.started_at || '',
     record.finished_at || nowIso_(),
     String(Boolean(record.dry_run)),
@@ -4559,8 +4574,7 @@ function saveRunLog(record) {
 
 function saveScheduledRunLog_(result) {
   try {
-    var sheet = getManagedSheet_('scheduled_run_logs');
-    sheet.appendRow([
+    appendManagedSheetRow_('scheduled_run_logs', [
       result.started_at || '',
       result.finished_at || nowIso_(),
       result.elapsed_seconds || 0,
@@ -4581,16 +4595,14 @@ function saveScheduledRunLog_(result) {
 }
 
 function saveError(context, error) {
-  var sheet = getManagedSheet_('errors');
   var message = error && error.message ? error.message : String(error);
   var raw = error && error.rawResponse ? error.rawResponse : '';
-  sheet.appendRow([nowIso_(), context || '', message, raw]);
+  appendManagedSheetRow_('errors', [nowIso_(), context || '', message, raw]);
 }
 
 function saveSlackReactionEventLog_(stats) {
   try {
-    var sheet = getManagedSheet_('slack_reaction_events');
-    sheet.appendRow([
+    appendManagedSheetRow_('slack_reaction_events', [
       nowIso_(),
       stats.event_type || '',
       stats.reaction_name || '',
@@ -4616,8 +4628,7 @@ function saveSlackReactionEventLog_(stats) {
 }
 
 function saveDryRunLog(record) {
-  var sheet = getManagedSheet_('dry_run_logs');
-  sheet.appendRow([
+  appendManagedSheetRow_('dry_run_logs', [
     record.created_at || nowIso_(),
     record.vin || '',
     record.action_type || '',
@@ -4629,7 +4640,6 @@ function saveDryRunLog(record) {
 }
 
 function saveInvoiceReactionPost_(record) {
-  var sheet = getManagedSheet_('invoice_reaction_posts');
   var row = [
     record.processed_at || nowIso_(),
     record.source_channel_name || '',
@@ -4647,9 +4657,7 @@ function saveInvoiceReactionPost_(record) {
   ].map(function(value) {
     return stringValue_(value);
   });
-  var rowIndex = sheet.getLastRow() + 1;
-  sheet.getRange(rowIndex, 1, 1, row.length).setNumberFormat('@');
-  sheet.getRange(rowIndex, 1, 1, row.length).setValues([row]);
+  appendManagedSheetRow_('invoice_reaction_posts', row, true);
 }
 
 function readInvoiceChannelScanState_() {
@@ -5191,6 +5199,39 @@ function testInvoiceForwardRoutes_() {
   );
 }
 
+function testManagedSheetAppendCapacity_() {
+  var maxRows = 1000;
+  var insertCalls = [];
+  var fullSheet = {
+    getLastRow: function() { return 1000; },
+    getMaxRows: function() { return maxRows; },
+    insertRowsAfter: function(afterRow, howMany) {
+      insertCalls.push({after_row: afterRow, how_many: howMany});
+      maxRows += howMany;
+    }
+  };
+  var expanded = ensureSheetAppendCapacity_(fullSheet, 1);
+  assertTest_(insertCalls.length === 1, 'a full managed sheet must be expanded before append');
+  assertTest_(
+    insertCalls[0].after_row === 1000 && insertCalls[0].how_many === MANAGED_SHEET_APPEND_RESERVE_ROWS,
+    'managed sheet expansion must add the configured reserve after the current grid'
+  );
+  assertTest_(
+    expanded.max_rows === 1500 && expanded.available_rows === 500 && expanded.rows_added === 500,
+    'managed sheet expansion result must report the new capacity'
+  );
+
+  var spareInsertCalled = false;
+  var sheetWithSpareRows = {
+    getLastRow: function() { return 900; },
+    getMaxRows: function() { return 1000; },
+    insertRowsAfter: function() { spareInsertCalled = true; }
+  };
+  var unchanged = ensureSheetAppendCapacity_(sheetWithSpareRows, 1);
+  assertTest_(!spareInsertCalled, 'a managed sheet with spare rows must not be expanded');
+  assertTest_(unchanged.available_rows === 100 && unchanged.rows_added === 0, 'existing spare capacity must be reported');
+}
+
 function testReactionForwarding_() {
   var rules = readReactionForwardRulesFromValues_([
     SHEET_HEADERS.reaction_forward_rules,
@@ -5408,6 +5449,7 @@ function testResolveVinGroups() {
   testInvoiceForwardFallback_();
   testInvoiceSettingsParsing_();
   testInvoiceForwardRoutes_();
+  testManagedSheetAppendCapacity_();
   testReactionForwarding_();
   testScheduledRuntimeGuards_();
   testVehicleLinkProductionControls_();
@@ -6452,6 +6494,58 @@ function getManagedSheet_(sheetName) {
     seedReactionForwardRuleTemplate_(sheet);
   }
   return sheet;
+}
+
+function ensureManagedLogCapacityNow_(confirm) {
+  if (confirm !== MANAGED_LOG_CAPACITY_CONFIRM_TOKEN) {
+    throw new Error(
+      'ログシートの容量確保には confirm=' + MANAGED_LOG_CAPACITY_CONFIRM_TOKEN + ' が必要です。'
+    );
+  }
+  return {
+    checked_at: nowIso_(),
+    reserve_rows: MANAGED_SHEET_APPEND_RESERVE_ROWS,
+    sheets: APPEND_ONLY_MANAGED_SHEET_NAMES.map(function(sheetName) {
+      var sheet = getManagedSheet_(sheetName);
+      var capacity = ensureSheetAppendCapacity_(sheet, MANAGED_SHEET_APPEND_RESERVE_ROWS);
+      capacity.sheet_name = sheetName;
+      return capacity;
+    })
+  };
+}
+
+function appendManagedSheetRow_(sheetName, row, forceText) {
+  var sheet = getManagedSheet_(sheetName);
+  ensureSheetAppendCapacity_(sheet, 1);
+  var rowIndex = sheet.getLastRow() + 1;
+  if (forceText) {
+    var range = sheet.getRange(rowIndex, 1, 1, row.length);
+    range.setNumberFormat('@');
+    range.setValues([row]);
+  } else {
+    sheet.appendRow(row);
+  }
+  return rowIndex;
+}
+
+function ensureSheetAppendCapacity_(sheet, minimumFreeRows) {
+  var minimum = Math.max(parseInt(minimumFreeRows, 10) || 1, 1);
+  var lastRow = sheet.getLastRow();
+  var maxRows = sheet.getMaxRows();
+  var availableRows = Math.max(maxRows - lastRow, 0);
+  var rowsAdded = 0;
+  if (availableRows < minimum) {
+    rowsAdded = Math.max(MANAGED_SHEET_APPEND_RESERVE_ROWS, minimum - availableRows);
+    sheet.insertRowsAfter(maxRows, rowsAdded);
+    maxRows += rowsAdded;
+    availableRows = Math.max(maxRows - lastRow, 0);
+  }
+  return {
+    last_row: lastRow,
+    max_rows: maxRows,
+    available_rows: availableRows,
+    rows_added: rowsAdded
+  };
 }
 
 function findExistingSpreadsheet_() {

@@ -282,6 +282,8 @@ Apps Script上で以下を実行できます。
   - Botが参加しているチャンネル一覧、現在の5監視元、ルート別転送先、未解決の監視元／転送先を確認します。
 - `?action=diagnostics`
   - Slack認証、参加チャンネル、依頼リアクションルート、アシスタント転送ルール、直近エラー、直近リアクションイベントを確認します。トークンや投稿本文は返しません。
+- `?action=ensure_log_capacity&confirm=ENSURE_LOG_CAPACITY`
+  - 既存ログを削除せず、追記型の管理シートに500行以上の空きを確保します。通常のログ保存でも空きがない場合は自動で500行追加するため、この操作は復旧確認や事前保守に使います。
 - `?action=scheduled_run&confirm=RUN_SCHEDULED_MAIN`
   - 毎時処理を手動実行します。請求書とリアクションの取りこぼし確認を先に行い、車両監視と車案件リンク確認を残り時間で実行します。
 - `?action=scan_labels&channel_role=child&channel_name=carmore依頼&lookback_days=365&max_threads_per_channel=120`
@@ -625,6 +627,8 @@ Apps Scriptの時間主導型トリガーは分単位で厳密には動きませ
 ## エラー確認
 
 エラーは `errors` シートに保存されます。
+
+`status` の各シートには `last_row`、`max_rows`、`available_rows` も表示されます。`slack_reaction_events` などの追記型シートが最終行まで埋まった場合、次の保存前に500行を自動追加します。既存行は削除しません。手動で空きを確保する場合は、管理トークン付きの `?action=ensure_log_capacity&confirm=ENSURE_LOG_CAPACITY` を使います。
 
 よく見る項目:
 
