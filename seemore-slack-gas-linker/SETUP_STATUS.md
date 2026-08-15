@@ -1,6 +1,18 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-08-02 19:19 JST
+Last updated: 2026-08-15 17:11 JST
+
+## 2026-08-15 Hoped-number routing expansion
+
+- Confirmed the live private channel `依頼_希望ナンバー申請` (`C0APRNPHCAK`) and Bot membership before changing production settings.
+- Added optional `source_channel_names` to `invoice_forward_routes`. A blank route value keeps the existing common `INVOICE_SOURCE_CHANNEL_NAMES`; explicit route values are applied consistently to Slack Events, hourly recovery, targeted channel recovery, and route signatures.
+- Published GAS version 80 to both the Slack Events Web App and API executable deployments.
+- Added `依頼_希望ナンバー申請` as the sixth common source for both `invoice_rocket / rocket / 依頼＿請求書` and `payment_ufo / flying_saucer / 依頼_振込`.
+- Added the same channel as the sixth vehicle/thread-link child while retaining parent `依頼_車案件` and the five existing children.
+- A production 30-day targeted recovery checked 3 roots and 39 replies. Rocket found no candidate. UFO found and forwarded 2 previously unprocessed link-only candidates to `依頼_振込` with zero errors; the immediate rerun posted 0 and skipped both as duplicates.
+- A bounded 60-day vehicle-link rerun checked 3 parent threads, 2 link keys, and 1 child match. It posted 0, skipped 2 existing link actions as duplicates, and finished with zero errors, no deferred channel, and no deadline stop.
+- Final production status confirmed six resolved invoice sources, six vehicle-link children, both routes enabled, one hourly `scheduledMain` trigger, and zero unresolved sources or targets.
+- For Japanese admin query values, use UTF-8 percent encoding (`%E...`). PowerShell `HttpUtility.ParseQueryString(...).ToString()` can emit legacy `%uXXXX`, which Slack channel lookup treats as a literal invalid name.
 
 ## 2026-08-02 Managed log capacity hardening
 
@@ -287,8 +299,8 @@ Last updated: 2026-08-02 19:19 JST
 
 - Script ID: `1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb`
 - Editor URL: `https://script.google.com/d/1tC2SUs8K5ptQFafRaRtTcnTqHWCeBhuLw16Lh9gaWQ4rNCogom5atXWb/edit`
-- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 74
-- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 74
+- Setup deployment ID: `AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ` at version 80
+- API executable deployment ID: `AKfycbzXdY8hkYQiCY_NQOpCulPcQiZFIoB2gY2DciaoIhkhFfJYi5uROG1dtHF2ng9b8UgVoA` at version 80
 - Setup URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=setup`
 - Status URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=status`
 - Slack settings URL: `https://script.google.com/macros/s/AKfycbxaMhYnSz4l3lnUkPVeF6ZdR3DGYxryafwyT9pfGb5deveGsJ2N8mXjwTyHUrUr9fTArQ/exec?action=slack`
@@ -301,14 +313,15 @@ Last updated: 2026-08-02 19:19 JST
 - Required sheets exist with valid headers.
 - `reaction_forward_rules` and `reaction_forward_posts` exist with valid headers.
 - `reaction_forward_rules` contains one enabled `assistant_articles` rule: `アシスタント` + Slack API reaction `curly_loop` -> `電話対応`, `copy_text`, `include_source_link=false`.
-- `DRY_RUN=true` for scheduled `main()` runs. The verified real Slack post was executed through the targeted `link_threads` action with `dry_run=false`.
+- `DRY_RUN=false`; scheduled and protected manual vehicle-link runs can post after the locked duplicate recheck.
 - `PARENT_CHANNEL_NAME=依頼_車案件`.
-- `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス`.
+- `CHILD_CHANNEL_NAMES=carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込,依頼_希望ナンバー申請`.
 - `LOOKBACK_DAYS=60`.
 - Last verified `scheduledMain()` trigger count: 1.
 - Verified schedule: `MAIN_TRIGGER_INTERVAL_HOURS=1`.
 - `SLACK_BOT_TOKEN` is saved.
 - Invoice forwarding is enabled with `INVOICE_REPLY_THREAD_LIMIT=25` and `INVOICE_FORCE_RESCAN_HOURS=1`.
+- `INVOICE_SOURCE_CHANNEL_NAMES=carmore依頼,オールマシンサービス,依頼_all,依頼_車案件,依頼＿小売取引,依頼_希望ナンバー申請`.
 - `invoice_forward_routes` contains enabled `invoice_rocket` and `payment_ufo` routes. Both support root/reply messages, PDF forwarding, and link-only fallback.
 - Verified invoice runtime guard: `INVOICE_MAX_RUNTIME_SECONDS=300`.
 - Slack Events API is active for `reaction_added`; hourly polling remains as a backup.

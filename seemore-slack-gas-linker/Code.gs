@@ -48,14 +48,14 @@ var DEFAULT_SETTINGS = {
   SLACK_EVENT_REQUEST_TOKEN: '',
   WEB_ADMIN_TOKEN: '',
   PARENT_CHANNEL_NAME: '依頼_車案件',
-  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込',
+  CHILD_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込,依頼_希望ナンバー申請',
   LOOKBACK_DAYS: '60',
   DRY_RUN: 'true',
   MAIN_TRIGGER_HOURS: '3,10,13,16,20',
   MAIN_TRIGGER_INTERVAL_HOURS: '1',
   INVOICE_FORWARD_ENABLED: 'true',
   INVOICE_SOURCE_CHANNEL_NAME: '依頼＿ALL',
-  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_車案件,依頼＿小売取引',
+  INVOICE_SOURCE_CHANNEL_NAMES: 'carmore依頼,オールマシンサービス,依頼_all,依頼_車案件,依頼＿小売取引,依頼_希望ナンバー申請',
   INVOICE_TARGET_CHANNEL_NAME: '依頼＿請求書',
   INVOICE_REACTION_NAME: 'rocket',
   INVOICE_LOOKBACK_DAYS: '30',
@@ -145,7 +145,8 @@ var SHEET_HEADERS = {
     'enabled',
     'route_name',
     'reaction_name',
-    'target_channel_name'
+    'target_channel_name',
+    'source_channel_names'
   ],
   invoice_channel_scan_state: [
     'source_channel_name',
@@ -993,13 +994,15 @@ function processSlackReactionEvent_(event, settings) {
   };
   var invoiceSourceAllowed = false;
   if (shouldCheckInvoice) {
-    invoiceRouteResolution = resolveInvoiceForwardRouteContexts_(matchingInvoiceRoutes);
-    invoiceSourceAllowed = isInvoiceSourceChannelAllowed_(
+    var sourceMatchedInvoiceRoutes = matchingInvoiceRoutes.filter(function(route) {
+      return invoiceForwardRouteAllowsSource_(route, settings, sourceChannel, null);
+    });
+    invoiceSourceAllowed = sourceMatchedInvoiceRoutes.length > 0;
+    invoiceRouteResolution = resolveInvoiceForwardRouteContexts_(sourceMatchedInvoiceRoutes);
+    invoiceRouteResolution.contexts = filterInvoiceRouteContextsForSource_(
+      invoiceRouteResolution.contexts,
       settings,
-      sourceChannel,
-      invoiceRouteResolution.contexts.map(function(context) {
-        return context.targetChannel;
-      })
+      sourceChannel
     );
   }
   stats.invoice_source_allowed = invoiceSourceAllowed;
@@ -1008,7 +1011,7 @@ function processSlackReactionEvent_(event, settings) {
     stats.invoice_forwarding = makeInvoiceEventStats_(reactionName);
     recordUnresolvedInvoiceRoutes_(
       stats.invoice_forwarding,
-      matchingInvoiceRoutes,
+      sourceMatchedInvoiceRoutes,
       invoiceRouteResolution.unresolved,
       'processSlackReactionEvent'
     );
@@ -1091,21 +1094,36 @@ function mergeInvoiceEventStats_(target, source) {
   mergeInvoiceRouteResults_(target, source.route_results);
 }
 
-function isInvoiceSourceChannelAllowed_(settings, sourceChannel, targetChannels) {
-  var targets = Array.isArray(targetChannels)
-    ? targetChannels
-    : (targetChannels ? [targetChannels] : []);
-  if (targets.some(function(targetChannel) {
-    return targetChannel && sourceChannel.id === targetChannel.id;
-  })) {
+function invoiceForwardRouteAllowsSource_(route, settings, sourceChannel, targetChannel) {
+  if (!route || !sourceChannel || !sourceChannel.id) {
     return false;
   }
-  if (settings.invoiceSourceAllJoinedChannels) {
+  if (targetChannel && targetChannel.id && sourceChannel.id === targetChannel.id) {
+    return false;
+  }
+  var configuredNames = route.sourceChannelNames && route.sourceChannelNames.length
+    ? route.sourceChannelNames
+    : (settings.invoiceSourceChannelNames || []);
+  var allJoined = route.sourceChannelNames && route.sourceChannelNames.length
+    ? configuredNames.indexOf('*') !== -1
+    : settings.invoiceSourceAllJoinedChannels;
+  if (allJoined) {
     return true;
   }
-  return (settings.invoiceSourceChannelNames || []).some(function(name) {
+  return configuredNames.some(function(name) {
     return stringValue_(name).trim() === stringValue_(sourceChannel.id) ||
       channelNameMatches_(sourceChannel, name);
+  });
+}
+
+function filterInvoiceRouteContextsForSource_(routeContexts, settings, sourceChannel) {
+  return (routeContexts || []).filter(function(context) {
+    return invoiceForwardRouteAllowsSource_(
+      context.route,
+      settings,
+      sourceChannel,
+      context.targetChannel
+    );
   });
 }
 
@@ -1407,6 +1425,7 @@ function getSetupStatus_() {
           route_name: route.routeName,
           reaction_name: route.reactionName,
           target_channel_name: route.targetChannelName,
+          source_channel_names: (route.sourceChannelNames || []).join(','),
           row_number: route.rowNumber || '',
           validation_error: route.validationError || ''
         };
@@ -2439,11 +2458,14 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
     var targetChannels = routeContexts.map(function(context) {
       return context.targetChannel;
     });
-    var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels);
+    var routeSourceSettings = invoiceSourceSettingsForRoutes_(settings, routeContexts.map(function(context) {
+      return context.route;
+    }));
+    var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(routeSourceSettings, targetChannels);
     var sourceChannels = sourceResolution.channels;
-    stats.configured_source_count = settings.invoiceSourceAllJoinedChannels
+    stats.configured_source_count = routeSourceSettings.invoiceSourceAllJoinedChannels
       ? sourceChannels.length
-      : settings.invoiceSourceChannelNames.length;
+      : routeSourceSettings.invoiceSourceChannelNames.length;
     stats.unresolved_sources = sourceResolution.unresolved;
     stats.unresolved_source_count = sourceResolution.unresolved.length;
     sourceResolution.unresolved.forEach(function(unresolvedSource) {
@@ -2479,12 +2501,20 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
         break;
       }
       var sourceChannel = sourceChannels[sourceIndex];
+      var sourceRouteContexts = filterInvoiceRouteContextsForSource_(routeContexts, settings, sourceChannel);
+      if (!sourceRouteContexts.length) {
+        continue;
+      }
       var channelStats = makeInvoiceChannelStats_(sourceChannel, stats);
+      var channelRouteSignature = invoiceForwardRouteSignature_(sourceRouteContexts.map(function(context) {
+        return context.route;
+      }));
+      channelStats.route_signature = channelRouteSignature;
       stats.channel_results.push(channelStats);
       try {
         processInvoiceChannelReactions_(
           sourceChannel,
-          routeContexts,
+          sourceRouteContexts,
           settings,
           channelStats,
           dryRunOverride,
@@ -2495,7 +2525,7 @@ function processInvoiceReactions_(dryRunOverride, lookbackDaysOverride, historyL
           startedAtMs,
           forceRescanOverride,
           runtimeDeadlineMs,
-          stats.route_signature
+          channelRouteSignature
         );
       } catch (error) {
         channelStats.error_count += 1;
@@ -2562,7 +2592,7 @@ function processInvoiceMessageByTs_(sourceChannelName, sourceMessageTs, sourceTh
   var routeContext = routeResolution.contexts[0];
   var targetChannel = routeContext.targetChannel;
   var sourceChannel = getChannelByName_(sourceChannelName);
-  if (!isInvoiceSourceChannelAllowed_(settings, sourceChannel, [targetChannel])) {
+  if (!invoiceForwardRouteAllowsSource_(route, settings, sourceChannel, targetChannel)) {
     throw new Error('依頼リアクション監視対象外のチャンネルです: ' + sourceChannel.name);
   }
 
@@ -3467,6 +3497,7 @@ function legacyInvoiceForwardRoute_(settings) {
     routeName: 'invoice_rocket',
     reactionName: normalizeReactionName_(settings && settings.invoiceReactionName),
     targetChannelName: stringValue_(settings && settings.invoiceTargetChannelName).trim(),
+    sourceChannelNames: [],
     legacy: true
   };
 }
@@ -3497,6 +3528,7 @@ function readInvoiceForwardRoutesFromValues_(values) {
       routeName: routeName,
       reactionName: normalizeReactionName_(row[2]),
       targetChannelName: stringValue_(row[3]).trim(),
+      sourceChannelNames: parseCommaSeparatedSetting_(row[4]),
       legacy: false,
       rowNumber: index + 2,
       validationError: validationError
@@ -3579,7 +3611,8 @@ function invoiceForwardRouteSignature_(routes) {
     return [
       route.routeName,
       normalizeReactionName_(route.reactionName),
-      stringValue_(route.targetChannelName).trim()
+      stringValue_(route.targetChannelName).trim(),
+      (route.sourceChannelNames || []).slice().sort().join(',')
     ].join('|');
   }).sort());
 }
@@ -3619,6 +3652,9 @@ function buildInvoiceForwardRouteRow_(input) {
   var routeName = stringValue_(input.routeName).trim();
   var reactionName = normalizeReactionName_(input.reactionName);
   var targetChannelName = stringValue_(input.targetChannelName).trim();
+  var sourceChannelNames = Array.isArray(input.sourceChannelNames)
+    ? parseCommaSeparatedSetting_(input.sourceChannelNames.join(','))
+    : parseCommaSeparatedSetting_(input.sourceChannelNames);
   if (!routeName) {
     throw new Error('invoice_forward_routes route_name is required.');
   }
@@ -3633,6 +3669,7 @@ function buildInvoiceForwardRouteRow_(input) {
     routeName: routeName,
     reactionName: reactionName,
     targetChannelName: targetChannelName,
+    sourceChannelNames: sourceChannelNames,
     legacy: false
   };
   return {
@@ -3640,7 +3677,8 @@ function buildInvoiceForwardRouteRow_(input) {
       enabledValue ? 'true' : 'false',
       routeName,
       reactionName,
-      targetChannelName
+      targetChannelName,
+      sourceChannelNames.join(',')
     ],
     route: route
   };
@@ -3655,11 +3693,15 @@ function buildInvoiceForwardRouteWebInput_(params, existingRoutes) {
   var existing = (existingRoutes || []).filter(function(route) {
     return route.routeName === routeName;
   })[0] || null;
+  var hasSourceChannelNames = Object.prototype.hasOwnProperty.call(params, 'source_channel_names');
   return {
     enabled: enabled,
     routeName: routeName,
     reactionName: stringValue_(params.reaction_name || (existing ? existing.reactionName : '')),
-    targetChannelName: stringValue_(params.target_channel_name || (existing ? existing.targetChannelName : ''))
+    targetChannelName: stringValue_(params.target_channel_name || (existing ? existing.targetChannelName : '')),
+    sourceChannelNames: hasSourceChannelNames
+      ? parseCommaSeparatedSetting_(params.source_channel_names)
+      : (existing ? (existing.sourceChannelNames || []).slice() : [])
   };
 }
 
@@ -3677,15 +3719,23 @@ function upsertInvoiceForwardRouteFromWeb_(params) {
   if (targetChannel.is_member === false) {
     throw new Error('Slack channel is not joined by bot: ' + built.route.targetChannelName);
   }
-  if (!settings.invoiceSourceAllJoinedChannels &&
-      isInvoiceSourceChannelAllowed_(settings, targetChannel, [])) {
+  var routeSourceSettings = invoiceSourceSettingsForRoutes_(settings, [built.route]);
+  if (!routeSourceSettings.invoiceSourceAllJoinedChannels &&
+      invoiceForwardRouteAllowsSource_(built.route, settings, targetChannel, null)) {
     throw new Error('Invoice forward target cannot also be a monitored source: ' + targetChannel.name);
+  }
+  var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(routeSourceSettings, [targetChannel]);
+  if (sourceResolution.unresolved.length) {
+    throw new Error('Invoice forward source is unresolved: ' + sourceResolution.unresolved.map(function(source) {
+      return source.configured_name + ':' + source.reason;
+    }).join(','));
   }
   return upsertInvoiceForwardRoute_({
     enabled: built.route.enabled,
     routeName: built.route.routeName,
     reactionName: built.route.reactionName,
-    targetChannelName: targetChannel.name
+    targetChannelName: targetChannel.name,
+    sourceChannelNames: built.route.sourceChannelNames
   });
 }
 
@@ -4949,7 +4999,8 @@ function testInvoiceSettingsParsing_() {
     'missing invoice source setting must default to explicit invoice channels'
   );
   var defaultInvoiceSources = parseCommaSeparatedSetting_(DEFAULT_SETTINGS.INVOICE_SOURCE_CHANNEL_NAMES);
-  assertTest_(defaultInvoiceSources.length === 5, 'default invoice source setting must contain exactly five active channels');
+  assertTest_(defaultInvoiceSources.length === 6, 'default invoice source setting must contain exactly six active channels');
+  assertTest_(defaultInvoiceSources.indexOf('依頼_希望ナンバー申請') !== -1, 'default invoice sources must include hoped-number requests');
   assertTest_(defaultInvoiceSources.indexOf('依頼_引き継ぎ') === -1, 'archived handover channel must not be a default invoice source');
   assertTest_(DEFAULT_SETTINGS.INVOICE_FORCE_RESCAN_HOURS === '1', 'invoice full recovery must run hourly by default');
   assertTest_(
@@ -4987,8 +5038,8 @@ function testInvoiceForwardRoutes_() {
   );
   var routes = readInvoiceForwardRoutesFromValues_([
     SHEET_HEADERS.invoice_forward_routes,
-    ['true', 'invoice_rocket', ':ROCKET:', '依頼＿請求書'],
-    ['true', 'payment_ufo', ':Flying_Saucer:', '依頼_振込'],
+    ['true', 'invoice_rocket', ':ROCKET:', '依頼＿請求書', 'source-one,希望ナンバー'],
+    ['true', 'payment_ufo', ':Flying_Saucer:', '依頼_振込', 'source-one'],
     ['false', 'disabled_route', 'white_check_mark', '確認'],
     ['true', 'payment_ufo', 'flying_saucer', '重複先'],
     ['true', '', 'eyes', '空名']
@@ -5010,6 +5061,64 @@ function testInvoiceForwardRoutes_() {
   assertTest_(
     invoiceForwardRouteSignature_(runnable) !== invoiceForwardRouteSignature_([runnable[0]]),
     'invoice route signature must change when the UFO route is added'
+  );
+  assertTest_(
+    invoiceForwardRouteSignature_([runnable[0]]) !== invoiceForwardRouteSignature_([{
+      enabled: true,
+      routeName: runnable[0].routeName,
+      reactionName: runnable[0].reactionName,
+      targetChannelName: runnable[0].targetChannelName,
+      sourceChannelNames: ['source-one']
+    }]),
+    'invoice route signature must change when route-specific sources change'
+  );
+  assertTest_(
+    invoiceForwardRouteAllowsSource_(runnable[0], {
+      invoiceSourceAllJoinedChannels: false,
+      invoiceSourceChannelNames: ['legacy-source']
+    }, {id: 'C_HOPE', name: '希望ナンバー'}, null),
+    'rocket route must accept its route-specific source'
+  );
+  assertTest_(
+    !invoiceForwardRouteAllowsSource_(runnable[1], {
+      invoiceSourceAllJoinedChannels: false,
+      invoiceSourceChannelNames: ['legacy-source']
+    }, {id: 'C_HOPE', name: '希望ナンバー'}, null),
+    'UFO route must not accept the rocket-only source'
+  );
+  var hopeContexts = filterInvoiceRouteContextsForSource_([
+    {route: runnable[0], targetChannel: {id: 'C_ROCKET_TARGET', name: '依頼＿請求書'}},
+    {route: runnable[1], targetChannel: {id: 'C_UFO_TARGET', name: '依頼_振込'}}
+  ], {
+    invoiceSourceAllJoinedChannels: false,
+    invoiceSourceChannelNames: ['legacy-source']
+  }, {id: 'C_HOPE', name: '希望ナンバー'});
+  assertTest_(
+    hopeContexts.length === 1 && hopeContexts[0].route.routeName === 'invoice_rocket',
+    'event and scheduled paths must select only the rocket route for the rocket-only source'
+  );
+  assertTest_(
+    invoiceForwardRouteAllowsSource_({sourceChannelNames: []}, {
+      invoiceSourceAllJoinedChannels: false,
+      invoiceSourceChannelNames: ['legacy-source']
+    }, {id: 'C_LEGACY', name: 'legacy-source'}, null),
+    'blank route sources must retain the legacy global source list'
+  );
+  var routeSourceSettings = invoiceSourceSettingsForRoutes_({
+    invoiceSourceAllJoinedChannels: false,
+    invoiceSourceChannelNames: ['legacy-source']
+  }, runnable);
+  assertTest_(
+    routeSourceSettings.invoiceSourceChannelNames.join(',') === 'source-one,希望ナンバー',
+    'scheduled scanning must use the union of route-specific sources'
+  );
+  var mixedRouteSourceSettings = invoiceSourceSettingsForRoutes_({
+    invoiceSourceAllJoinedChannels: false,
+    invoiceSourceChannelNames: ['legacy-source']
+  }, [runnable[0], {sourceChannelNames: []}]);
+  assertTest_(
+    mixedRouteSourceSettings.invoiceSourceChannelNames.join(',') === 'source-one,希望ナンバー,legacy-source',
+    'route-specific and legacy global sources must be combined without replacement'
   );
   assertTest_(
     invoiceRouteConfigurationChanged_({route_signature: 'old'}, invoiceForwardRouteSignature_(runnable)),
@@ -5143,8 +5252,18 @@ function testInvoiceForwardRoutes_() {
   assertTest_(disabledRouteInput.enabled === false, 'route management must parse enabled=false');
   assertTest_(
     disabledRouteInput.reactionName === 'flying_saucer' &&
-      disabledRouteInput.targetChannelName === '依頼_振込',
+      disabledRouteInput.targetChannelName === '依頼_振込' &&
+      disabledRouteInput.sourceChannelNames.join(',') === 'source-one',
     'disabling a route must reuse its existing reaction and target without Slack resolution'
+  );
+  var clearedRouteSources = buildInvoiceForwardRouteWebInput_({
+    enabled: 'true',
+    route_name: 'payment_ufo',
+    source_channel_names: ''
+  }, runnable);
+  assertTest_(
+    clearedRouteSources.sourceChannelNames.length === 0,
+    'explicitly blank route sources must restore the legacy global source list'
   );
 
   var routeContext = {
@@ -5459,7 +5578,8 @@ function testResolveVinGroups() {
     {name: 'オールマシンサービス', id: 'CHILD_ALLMACHINE'},
     {name: '依頼_all', id: 'CHILD_REQUEST_ALL'},
     {name: '電話対応', id: 'CHILD_PHONE'},
-    {name: '依頼_振込', id: 'CHILD_PAYMENT'}
+    {name: '依頼_振込', id: 'CHILD_PAYMENT'},
+    {name: '依頼_希望ナンバー申請', id: 'CHILD_HOPED_NUMBER'}
   ];
   var threads = [
     testThread_('PARENT', '依頼_車案件', '100.000001', ['ABC123'], 'https://slack.test/parent-old'),
@@ -5470,6 +5590,7 @@ function testResolveVinGroups() {
     testThread_('CHILD_REQUEST_ALL', '依頼_all', '176.000001', ['ABC123'], 'https://slack.test/request-all'),
     testThread_('CHILD_PHONE', '電話対応', '177.000001', ['ABC123'], 'https://slack.test/phone'),
     testThread_('CHILD_PAYMENT', '依頼_振込', '178.000001', ['ABC123'], 'https://slack.test/payment'),
+    testThread_('CHILD_HOPED_NUMBER', '依頼_希望ナンバー申請', '179.000001', ['ABC123'], 'https://slack.test/hoped-number'),
     testThread_('CHILD_CARMORE', 'carmore依頼', '300.000001', ['ABC1234'], 'https://slack.test/partial-match'),
     testThread_('PARENT', '依頼_車案件', '400.000001', [], 'https://slack.test/thread-id-parent', ['案件ABC123']),
     testThread_('CHILD_CARMORE', 'carmore依頼', '450.000001', [], 'https://slack.test/thread-id-child', ['案件 abc１２３'])
@@ -5493,15 +5614,16 @@ function testResolveVinGroups() {
   assertTest_(groups.childGroups[2].representative.url === 'https://slack.test/request-all', 'request all representative must be selected');
   assertTest_(groups.childGroups[3].representative.url === 'https://slack.test/phone', 'phone representative must be selected');
   assertTest_(groups.childGroups[4].representative.url === 'https://slack.test/payment', 'payment representative must be selected');
+  assertTest_(groups.childGroups[5].representative.url === 'https://slack.test/hoped-number', 'hoped-number representative must be selected');
   assertTest_(actions.filter(function(action) { return action.relationType === 'parent_duplicate'; }).length === 1, 'parent duplicate action count');
   assertTest_(actions.filter(function(action) { return action.relationType === 'same_channel_duplicate'; }).length === 1, 'same channel duplicate action count');
-  assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 5, 'child to parent action count');
+  assertTest_(actions.filter(function(action) { return action.relationType === 'child_to_parent'; }).length === 6, 'child to parent action count');
   assertTest_(actions.every(function(action) { return action.source.url !== 'https://slack.test/partial-match'; }), 'partial VIN match must not be included');
   assertTest_(
     JSON.stringify(parseCommaSeparatedSetting_(DEFAULT_SETTINGS.CHILD_CHANNEL_NAMES)) === JSON.stringify(childChannels.map(function(channel) {
       return channel.name;
     })),
-    'default child channel configuration must include all five targets'
+    'default child channel configuration must include all six targets'
   );
 
   var threadIdGroups = resolveLinkKeyGroupsFromChannels_(makeLinkKey_('thread_id', '案件ABC123'), threads, parentChannelId, childChannels);
@@ -6280,6 +6402,33 @@ function resolveInvoiceSourceChannels_(settings, targetChannels) {
   return resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels).channels;
 }
 
+function invoiceSourceSettingsForRoutes_(settings, routes) {
+  var names = [];
+  var allJoined = false;
+  (routes || []).forEach(function(route) {
+    var routeNames = route.sourceChannelNames && route.sourceChannelNames.length
+      ? route.sourceChannelNames
+      : (settings.invoiceSourceChannelNames || []);
+    var routeAllJoined = route.sourceChannelNames && route.sourceChannelNames.length
+      ? routeNames.indexOf('*') !== -1
+      : settings.invoiceSourceAllJoinedChannels;
+    if (routeAllJoined) {
+      allJoined = true;
+      return;
+    }
+    routeNames.forEach(function(name) {
+      var normalized = stringValue_(name).trim();
+      if (normalized && names.indexOf(normalized) === -1) {
+        names.push(normalized);
+      }
+    });
+  });
+  return {
+    invoiceSourceAllJoinedChannels: allJoined,
+    invoiceSourceChannelNames: allJoined ? ['*'] : names
+  };
+}
+
 function resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels) {
   return resolveInvoiceSourceChannelsFromAvailable_(
     settings,
@@ -6385,7 +6534,8 @@ function listJoinedChannelsForInvoice_() {
     return context.targetChannel;
   });
   var joinedChannels = getJoinedChannels_().map(channelSummary_);
-  var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(settings, targetChannels);
+  var routeSourceSettings = invoiceSourceSettingsForRoutes_(settings, routes);
+  var sourceResolution = resolveInvoiceSourceChannelsWithDiagnostics_(routeSourceSettings, targetChannels);
   var invoiceSources = sourceResolution.channels.map(channelSummary_);
   sourceResolution.unresolved.forEach(function(unresolvedSource) {
     saveError(
@@ -6404,7 +6554,11 @@ function listJoinedChannelsForInvoice_() {
         enabled: route.enabled,
         route_name: route.routeName,
         reaction_name: route.reactionName,
-        target_channel_name: route.targetChannelName
+        target_channel_name: route.targetChannelName,
+        source_channel_names: (route.sourceChannelNames || []).join(','),
+        effective_source_channel_names: (route.sourceChannelNames && route.sourceChannelNames.length
+          ? route.sourceChannelNames
+          : settings.invoiceSourceChannelNames).join(',')
       };
     }),
     invalid_invoice_forward_routes: invalidRoutes.map(function(route) {
@@ -6412,12 +6566,13 @@ function listJoinedChannelsForInvoice_() {
         route_name: route.routeName,
         reaction_name: route.reactionName,
         target_channel_name: route.targetChannelName,
+        source_channel_names: (route.sourceChannelNames || []).join(','),
         row_number: route.rowNumber || '',
         validation_error: route.validationError || 'route_not_runnable'
       };
     }),
     unresolved_target_routes: routeResolution.unresolved,
-    invoice_source_setting: settings.invoiceSourceChannelNames.join(','),
+    invoice_source_setting: routeSourceSettings.invoiceSourceChannelNames.join(','),
     invoice_source_error: sourceResolution.unresolved.map(function(source) {
       return source.configured_name + ':' + source.reason;
     }).join(','),
@@ -6610,13 +6765,15 @@ function seedInvoiceForwardRoutes_(sheet, settingsSheet) {
       'true',
       'invoice_rocket',
       normalizeReactionName_(settingOrDefault_(rawSettings, 'INVOICE_REACTION_NAME')),
-      stringValue_(settingOrDefault_(rawSettings, 'INVOICE_TARGET_CHANNEL_NAME')).trim()
+      stringValue_(settingOrDefault_(rawSettings, 'INVOICE_TARGET_CHANNEL_NAME')).trim(),
+      ''
     ],
     [
       'true',
       'payment_ufo',
       'flying_saucer',
-      '依頼_振込'
+      '依頼_振込',
+      ''
     ]
   ];
   sheet.getRange(2, 1, rows.length, rows[0].length).setNumberFormat('@');
@@ -6732,7 +6889,7 @@ function settingMemo_(key) {
     MAIN_TRIGGER_INTERVAL_HOURS: '1ならscheduledMain()を1時間ごとに実行します。空にするとMAIN_TRIGGER_HOURSを使います。',
     INVOICE_FORWARD_ENABLED: 'trueならinvoice_forward_routesに登録した依頼リアクション転送を有効にします。',
     INVOICE_SOURCE_CHANNEL_NAME: '旧設定。単一監視元チャンネル名です。INVOICE_SOURCE_CHANNEL_NAMESが空の場合だけ使います。',
-    INVOICE_SOURCE_CHANNEL_NAMES: '*ならBot参加済み全チャンネルを監視します。通常はロケット／UFO共通の監視元をカンマ区切りで明示します。',
+    INVOICE_SOURCE_CHANNEL_NAMES: '*ならBot参加済み全チャンネルを監視します。invoice_forward_routesのsource_channel_namesが空のルートだけ、この共通監視元を使います。',
     INVOICE_TARGET_CHANNEL_NAME: '旧ロケットルートの転送先互換設定です。通常はinvoice_forward_routesを使います。',
     INVOICE_REACTION_NAME: '旧ロケットルートの絵文字名互換設定です。通常はinvoice_forward_routesを使います。',
     INVOICE_LOOKBACK_DAYS: '依頼リアクション転送で直近何日分の投稿を見るかを指定します。',

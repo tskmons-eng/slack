@@ -38,14 +38,14 @@ Slack内の車案件スレッドを、車体番号またはスレIDの完全一�
 
 ## 依頼リアクション転送（ロケット／UFO）
 
-`INVOICE_SOURCE_CHANNEL_NAMES` で明示した共通の5監視元について、親投稿とスレッド返信の両方を確認します。転送ルートは `invoice_forward_routes` シートで管理し、初期状態では次の2ルートが有効です。
+`INVOICE_SOURCE_CHANNEL_NAMES` で明示した共通の6監視元について、親投稿とスレッド返信の両方を確認します。転送ルートは `invoice_forward_routes` シートで管理し、初期状態では次の2ルートが有効です。
 
 | route_name | reaction_name | target_channel_name |
 | --- | --- | --- |
 | `invoice_rocket` | `rocket` | `依頼＿請求書` |
 | `payment_ufo` | `flying_saucer` | `依頼_振込` |
 
-監視元は `carmore依頼`、`オールマシンサービス`、`依頼_all`、`依頼_車案件`、`依頼＿小売取引` の5件です。アーカイブ済みの `依頼_引き継ぎ` は2026-07-30のユーザー様判断で対象外にしています。`*` はBotが参加している全チャンネルを監視しますが、関係ないチャンネルも走査して遅延の原因になるため通常は使いません。各転送先は監視対象から除外します。監視元の1件を名前解決できない、またはBotが未参加の場合は診断へ残し、解決できた他の監視元は継続します。
+監視元は `carmore依頼`、`オールマシンサービス`、`依頼_all`、`依頼_車案件`、`依頼＿小売取引`、`依頼_希望ナンバー申請` の6件です。アーカイブ済みの `依頼_引き継ぎ` は2026-07-30のユーザー様判断で対象外にしています。`*` はBotが参加している全チャンネルを監視しますが、関係ないチャンネルも走査して遅延の原因になるため通常は使いません。各転送先は監視対象から除外します。監視元の1件を名前解決できない、またはBotが未参加の場合は診断へ残し、解決できた他の監視元は継続します。
 
 対象メッセージにPDFファイルがある場合は以下の形式で投稿します。
 
@@ -226,14 +226,14 @@ Slack Bot Tokenは、同じWebアプリURLの末尾を `?action=slack` にして
 | `SLACK_EVENT_REQUEST_TOKEN` | 自動生成 | Slack Events APIのRequest URLに付ける共有トークンです。URLへ `slack_event_token` として付けます。 |
 | `WEB_ADMIN_TOKEN` | 自動生成 | 公開Webアプリの管理操作に必要なトークンです。URLへ `admin_token` として付けます。 |
 | `PARENT_CHANNEL_NAME` | `依頼_車案件` | 大親チャンネル名です。 |
-| `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込` | 子チャンネル名をカンマ区切りで指定します。 |
+| `CHILD_CHANNEL_NAMES` | `carmore依頼,オールマシンサービス,依頼_all,電話対応,依頼_振込,依頼_希望ナンバー申請` | 子チャンネル名をカンマ区切りで指定します。 |
 | `LOOKBACK_DAYS` | `60` | 最終更新がこの日数以内のスレッドだけ処理します。 |
 | `DRY_RUN` | `true` | `true` の間は車案件の自動紐付けをSlackへ投稿しません。 |
 | `MAIN_TRIGGER_HOURS` | `3,10,13,16,20` | `MAIN_TRIGGER_INTERVAL_HOURS` を空にした場合だけ使う日次実行時刻です。 |
 | `MAIN_TRIGGER_INTERVAL_HOURS` | `1` | `scheduledMain()` を何時間ごとに実行するかです。`1` なら1時間ごとです。空にすると `MAIN_TRIGGER_HOURS` を使います。 |
 | `INVOICE_FORWARD_ENABLED` | `true` | `invoice_forward_routes` に登録した依頼リアクション転送を一括で有効にします。 |
 | `INVOICE_SOURCE_CHANNEL_NAME` | `依頼＿ALL` | 旧設定です。`INVOICE_SOURCE_CHANNEL_NAMES` が空の場合だけ使う単一監視元です。 |
-| `INVOICE_SOURCE_CHANNEL_NAMES` | 依頼系5チャンネル | ロケット／UFOで共通して確認するチャンネル名です。個別指定はカンマ区切りです。`*` はBot参加済み全チャンネルとなり、関係ないチャンネルが増えると遅延の原因になるため通常は使いません。 |
+| `INVOICE_SOURCE_CHANNEL_NAMES` | 依頼系6チャンネル | ロケット／UFOで共通して確認するチャンネル名です。個別指定はカンマ区切りです。`invoice_forward_routes.source_channel_names` が空のルートはこの共通設定を使います。`*` はBot参加済み全チャンネルとなり、関係ないチャンネルが増えると遅延の原因になるため通常は使いません。 |
 | `INVOICE_TARGET_CHANNEL_NAME` | `依頼＿請求書` | 旧ロケットルートとの互換設定です。通常は `invoice_forward_routes` を使います。 |
 | `INVOICE_REACTION_NAME` | `rocket` | 旧ロケットルートとの互換設定です。通常は `invoice_forward_routes` を使います。 |
 | `INVOICE_LOOKBACK_DAYS` | `30` | 請求書転送で直近何日分を見るかです。旧デフォルト `7` は自動で `30` に上げます。 |
@@ -251,9 +251,10 @@ enabled
 route_name
 reaction_name
 target_channel_name
+source_channel_names
 ```
 
-`reaction_name` はSlack API名で指定します。UFOは `flying_saucer` です。ルート名は管理操作・dry-run・一投稿回収で使うため重複させません。
+`reaction_name` はSlack API名で指定します。UFOは `flying_saucer` です。ルート名は管理操作・dry-run・一投稿回収で使うため重複させません。`source_channel_names` は任意のカンマ区切りで、空なら `INVOICE_SOURCE_CHANNEL_NAMES` を使います。ルート別に指定した場合も、Slack Events、毎時回収、指定チャンネル回収へ同じ条件が適用されます。
 
 ## テスト関数
 
@@ -279,7 +280,7 @@ Apps Script上で以下を実行できます。
 - `?action=scan_labels&channel_role=parent&lookback_days=365&max_threads_per_channel=300`
   - 指定ロールのチャンネルを走査し、`車体番号:` / `車台番号:` / `スレID:` ラベルを含むスレッド数と候補を確認します。
 - `?action=joined_channels`
-  - Botが参加しているチャンネル一覧、現在の5監視元、ルート別転送先、未解決の監視元／転送先を確認します。
+  - Botが参加しているチャンネル一覧、現在の6監視元、ルート別転送先、未解決の監視元／転送先を確認します。
 - `?action=diagnostics`
   - Slack認証、参加チャンネル、依頼リアクションルート、アシスタント転送ルール、直近エラー、直近リアクションイベントを確認します。トークンや投稿本文は返しません。
 - `?action=ensure_log_capacity&confirm=ENSURE_LOG_CAPACITY`
@@ -306,8 +307,8 @@ Apps Script上で以下を実行できます。
   - 指定チャンネルとルートだけを本番再処理します。保存済みの走査状態にかかわらず30日分を強制再走査するため、未転送リアクションの調査・救済に使います。
 - `?action=invoice_run_message&channel_name=チャンネル名&thread_ts=親投稿TS&message_ts=投稿TS&route_name=payment_ufo&confirm=RUN_INVOICE_FORWARD`
   - 指定した元投稿またはスレッド返信を、指定ルートだけで本番回収します。`route_name` を省略した場合は互換維持のため `invoice_rocket` を使います。
-- `?action=set_invoice_forward_route&route_name=payment_ufo&reaction_name=flying_saucer&target_channel_name=依頼_振込&enabled=true&confirm=UPDATE_INVOICE_FORWARD_ROUTE`
-  - 管理トークン付きURLからルートを追加・更新します。転送先にBotが参加していることを検証し、絵文字名はコロンを除いて正規化します。
+- `?action=set_invoice_forward_route&route_name=payment_ufo&reaction_name=flying_saucer&target_channel_name=依頼_振込&source_channel_names=監視元1,監視元2&enabled=true&confirm=UPDATE_INVOICE_FORWARD_ROUTE`
+  - 管理トークン付きURLからルートを追加・更新します。転送先と指定監視元にBotが参加していることを検証し、絵文字名はコロンを除いて正規化します。`source_channel_names` を省略すると既存値を維持し、空で送ると共通設定へ戻します。
 - `?action=set_invoice_source_channels&channel_names=チャンネル名1,チャンネル名2&confirm=UPDATE_INVOICE_SOURCE_CHANNELS`
   - ロケット／UFOで共通する監視元を明示指定へ更新します。`*` は受け付けません。
 - `?action=reaction_forward_dryrun`
@@ -339,9 +340,9 @@ Apps Script上で以下を実行できます。
 - Apps ScriptのURL FetchはGoogle個人アカウントで1日20,000回、Google Workspaceで1日100,000回が目安です。
 - Apps Scriptのトリガー実行時間合計はGoogle個人アカウントで1日90分、Google Workspaceで1日6時間が目安です。
 - Slack Web APIはメソッドごと、ワークスペースごとに分単位のレート制限があり、超過時はHTTP 429と `Retry-After` が返ります。
-- Slack Events APIはワークスペース/アプリあたり1時間30,000イベントが目安です。5チャンネル・新規投稿少なめの現在想定では問題になりにくいです。
+- Slack Events APIはワークスペース/アプリあたり1時間30,000イベントが目安です。6チャンネル・新規投稿少なめの現在想定では問題になりにくいです。
 
-現在の5チャンネル運用では、1時間ごとの軽い確認だけならURL Fetch量はかなり余裕があります。Slack API呼び出しはScript PropertiesのBot Tokenを直接使い、呼び出しごとの管理シート全初期化は行いません。設定値を増やす場合は `scheduled_run_logs`、`errors`、`invoice_channel_scan_state` を見ながら調整します。
+現在の6チャンネル運用では、1時間ごとの軽い確認だけならURL Fetch量はかなり余裕があります。Slack API呼び出しはScript PropertiesのBot Tokenを直接使い、呼び出しごとの管理シート全初期化は行いません。設定値を増やす場合は `scheduled_run_logs`、`errors`、`invoice_channel_scan_state` を見ながら調整します。
 
 重複防止は `linked_threads` のsource/target permalink比較と、投稿先スレッド本文中のURL確認の両方で行います。Slack timestampはGoogle Sheetsで数値化されることがあるため、重複判定の主キーとしてURLも必ず使います。
 
@@ -476,6 +477,7 @@ enabled
 route_name
 reaction_name
 target_channel_name
+source_channel_names
 ```
 
 `invoice_channel_scan_state`:
