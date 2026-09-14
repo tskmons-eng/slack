@@ -1,5 +1,12 @@
 # Plan
 
+## 2026-09-14 Gmail Slack 転送の一時停止
+
+- ユーザー様の次回利用指示まで、Gmail → Slack「メールbox」の自動転送を停止する。
+- 本番GAS `slackツール`（`seemore.co.ltd@gmail.com`）の `scheduledGmailToSlack`、Head、5分おきの実行予約1本だけを解除した。トリガー0件を本番画面で確認済み。
+- コード、接続設定、メール、ラベル、他の連携は保持した。コード変更・デプロイは不要。
+- 再開条件、元の実行間隔、停止期間中のメールの扱いは `メール転送/README.md` に記録した。ユーザー様の指示なしに再開しない。
+
 ## 2026-06-12 GitHub Publishing Helper
 
 - `tskmons-eng/slack` をGitHubに作成し、ローカル `main` を `origin/main` へpushする。

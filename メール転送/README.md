@@ -1,5 +1,22 @@
 # メール転送 運用メモ
 
+## 現在の状態：ユーザー様の再開指示まで停止（2026-09-14）
+
+- Gmail → Slack「メールbox」の自動転送は停止済み。ユーザー様が「次使う」「再開して」と指示するまで再開しない。
+- 対象は `seemore.co.ltd@gmail.com` の GAS `slackツール`。プロジェクトIDは `1Kw2yMdf4OeEfJ5wS6HDfh-74t4hDdZXXTZcCAVEbfL9KXAnIpPkbl67B`。
+- 本番の `scheduledGmailToSlack` の時間主導型トリガー1本を解除し、トリガー一覧が0件になったことをブラウザーで確認した。
+- コード、デプロイ、Script Properties、Gmailのメールとラベルは変更していない。他のGmail転送やSlack車案件連携も変更していない。
+- 再開前の設定：関数 `scheduledGmailToSlack`、デプロイ `Head`、時間主導型 → 分ベースのタイマー → 5分おき、エラー通知は毎日。
+
+### 再開手順（ユーザー様の指示があった時だけ）
+
+1. 上記アカウントで対象GASを開く。
+2. 停止中のメールも転送するか確認する。既存処理は直近14日以内の未転送受信メールと、既に `転送` ラベルが付いたメールを対象にするため、再開すると停止期間の一部も対象になり得る。再開前の確認では転送関数を実行しない。
+3. エディタの既存 `installGmailToSlackTrigger()` を1回実行するか、上記設定でトリガーを1本だけ追加する。
+4. `scheduledGmailToSlack` の5分おきトリガーが1本になったことを確認する。
+
+再開のためのコード再作成やWebhookの再登録は不要。
+
 ## 残すもの
 
 - `gmail_to_gmail_forward.js`
