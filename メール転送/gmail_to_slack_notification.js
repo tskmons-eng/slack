@@ -5,6 +5,7 @@
  * Store the Slack incoming webhook URL in Script Properties as SLACK_WEBHOOK_URL.
  */
 function forwardLabeledGmailToSlack() {
+  const startAt = getGmailToSlackStartAt_();
   const TARGET_LABEL = "転送";
   const DONE_LABEL = "slack転送済み";
   const WEBHOOK_URL = getSlackWebhookUrl_();
@@ -22,6 +23,7 @@ function forwardLabeledGmailToSlack() {
   threads.forEach(function(thread) {
     const messages = thread.getMessages();
     const message = messages[messages.length - 1];
+    if (message.getDate().getTime() <= startAt) return;
 
     const subject = message.getSubject() || "(件名なし)";
     const from = message.getFrom() || "";
@@ -67,6 +69,7 @@ function scheduledGmailToSlack() {
 }
 
 function labelGmailToSlackTargets() {
+  getGmailToSlackStartAt_();
   const TARGET_LABEL = "転送";
   const DONE_LABEL = "slack転送済み";
   const targetLabel = getOrCreateGmailLabel_(TARGET_LABEL);
@@ -75,11 +78,14 @@ function labelGmailToSlackTargets() {
 }
 
 function labelGmailToSlackTargets_(targetLabel, targetLabelName, doneLabelName) {
+  const startAt = getGmailToSlackStartAt_();
   const query = buildGmailToSlackQuery_(targetLabelName, doneLabelName);
   const threads = GmailApp.search(query, 0, 50);
 
   Logger.log("転送ラベル付与対象: " + threads.length + "件");
   threads.forEach(function(thread) {
+    const messages = thread.getMessages();
+    if (messages[messages.length - 1].getDate().getTime() <= startAt) return;
     thread.addLabel(targetLabel);
   });
 }
@@ -106,6 +112,7 @@ function buildGmailToSlackQuery_(targetLabelName, doneLabelName, options) {
   ];
 
   parts.push(`-label:${targetLabelName}`);
+  parts.push("after:" + Math.floor(getGmailToSlackStartAt_() / 1000));
 
   return parts.join(" ");
 }
@@ -116,12 +123,58 @@ function getOrCreateGmailLabel_(labelName) {
 
 function installGmailToSlackTrigger() {
   assertExpectedGmailAccount_("seemore.co.ltd@gmail.com");
+  getGmailToSlackStartAt_();
   removeGmailToSlackTrigger();
 
   ScriptApp.newTrigger("scheduledGmailToSlack")
     .timeBased()
     .everyMinutes(5)
     .create();
+}
+
+// Re-running this function preserves the boundary so retries cannot lose new mail.
+function resumeGmailToSlackFromNow() {
+  assertExpectedGmailAccount_("seemore.co.ltd@gmail.com");
+  const properties = PropertiesService.getScriptProperties();
+  if (!properties.getProperty("GMAIL_TO_SLACK_START_AT")) {
+    properties.setProperty("GMAIL_TO_SLACK_START_AT", new Date().toISOString());
+  }
+  getSlackWebhookUrl_();
+  installGmailToSlackTrigger();
+  return getGmailToSlackStatus();
+}
+
+function getGmailToSlackStartAt_() {
+  const value = PropertiesService.getScriptProperties().getProperty("GMAIL_TO_SLACK_START_AT");
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || timestamp > Date.now()) {
+    throw new Error("Set a valid GMAIL_TO_SLACK_START_AT before forwarding. No mail was sent.");
+  }
+  return timestamp;
+}
+
+// Read-only diagnosis: no sending or Gmail label changes.
+function getGmailToSlackStatus() {
+  assertExpectedGmailAccount_("seemore.co.ltd@gmail.com");
+  const startAt = getGmailToSlackStartAt_();
+  const label = GmailApp.getUserLabelByName("転送");
+  const threads = label ? label.getThreads() : [];
+  let eligible = 0;
+  threads.forEach(function(thread) {
+    const messages = thread.getMessages();
+    if (messages[messages.length - 1].getDate().getTime() > startAt) eligible++;
+  });
+  const status = {
+    start_at_jst: Utilities.formatDate(new Date(startAt), "Asia/Tokyo", "yyyy/MM/dd HH:mm:ss"),
+    scheduled_trigger_count: ScriptApp.getProjectTriggers().filter(function(trigger) {
+      return trigger.getHandlerFunction() === "scheduledGmailToSlack";
+    }).length,
+    labeled_eligible_count: eligible,
+    labeled_past_excluded_count: threads.length - eligible,
+    search_candidate_count_up_to_50: GmailApp.search(buildGmailToSlackQuery_("転送", "slack転送済み"), 0, 50).length
+  };
+  Logger.log(JSON.stringify(status));
+  return status;
 }
 
 function removeGmailToSlackTrigger() {
