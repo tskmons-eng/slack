@@ -16,10 +16,15 @@ oauth_config:
       - reactions:read
       - files:read
       - chat:write
+      # 米取引（請求書作成補助）：ツールが同じボットで🚀・完了スタンプを押し、納品書・請求書の PDF を投稿する
+      - reactions:write
+      - files:write
 settings:
   event_subscriptions:
     bot_events:
       - reaction_added
+      # 米取引：間違えて押したスタンプを外したとき、ツールの状態も戻す
+      - reaction_removed
       - message.groups
   org_deploy_enabled: false
   socket_mode_enabled: false

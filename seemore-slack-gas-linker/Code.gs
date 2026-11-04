@@ -11,6 +11,7 @@ var SCHEDULED_INVOICE_BUDGET_SECONDS = 150;
 var SCHEDULED_REACTION_BUDGET_SECONDS = 45;
 var SCHEDULED_VEHICLE_MONITOR_BUDGET_SECONDS = 45;
 var SCHEDULED_VEHICLE_LINK_MAX_THREADS_PER_CHANNEL = 20;
+var SCHEDULED_RICE_BUDGET_SECONDS = 40; // 米取引のスタンプの拾い直し（Rice.gs）。RICE_API_ENABLED=false の間はすぐ終わる
 var INVOICE_FORWARD_CONFIRM_TOKEN = 'RUN_INVOICE_FORWARD';
 var INVOICE_RUNTIME_SAFETY_SECONDS = 120;
 var INVOICE_SOURCE_CHANNEL_UPDATE_CONFIRM_TOKEN = 'UPDATE_INVOICE_SOURCE_CHANNELS';
@@ -716,6 +717,13 @@ function handleSlackEventPayload_(event, payload) {
       return jsonOutput_({ok: true, ignored: true, reason: 'unsupported_payload_type'});
     }
     var slackEvent = payload.event || {};
+    // 米取引（Rice.gs）へ渡す。中で例外を握るので、下の車案件・請求書転送の処理には影響しない。
+    if (typeof riceHandleSlackEventSafely_ === 'function') {
+      riceHandleSlackEventSafely_(slackEvent, payload);
+    }
+    if (slackEvent.type === 'reaction_removed') {
+      return jsonOutput_({ok: true, ignored: true, reason: 'reaction_removed_handled_by_rice_only'});
+    }
     if (slackEvent.type === 'message') {
       return jsonOutput_(processVehicleMessageEvent_(slackEvent, settings, payload.event_id || ''));
     }
@@ -1162,9 +1170,10 @@ function scheduledMain() {
     completed: false,
     deadline_reached: false,
     max_runtime_seconds: SCHEDULED_MAX_RUNTIME_SECONDS,
-    phase_order: 'invoice_forwarding,reaction_forwarding,vehicle_monitoring,vehicle_linking',
+    phase_order: 'invoice_forwarding,reaction_forwarding,vehicle_monitoring,rice_recovery,vehicle_linking',
     vehicle_linking: null,
     vehicle_monitoring: null,
+    rice_recovery: null,
     invoice_forwarding: null,
     reaction_forwarding: null,
     error_count: 0
@@ -1219,6 +1228,22 @@ function scheduledMain() {
   }
 
   try {
+    if (typeof scheduledRiceRecovery_ !== 'function') {
+      result.rice_recovery = scheduledSkippedResult_('rice_module_missing');
+      result.rice_recovery.deadline_reached = false;
+    } else if (runtimeDeadlineReached_(hardDeadlineMs)) {
+      result.rice_recovery = scheduledSkippedResult_('global_deadline_reached');
+    } else {
+      result.rice_recovery = scheduledRiceRecovery_(
+        scheduledPhaseDeadline_(hardDeadlineMs, SCHEDULED_RICE_BUDGET_SECONDS)
+      );
+    }
+  } catch (error) {
+    result.error_count += 1;
+    saveError('scheduledMain:rice_recovery', error);
+  }
+
+  try {
     if (runtimeDeadlineReached_(hardDeadlineMs)) {
       result.vehicle_linking = scheduledSkippedResult_('global_deadline_reached');
     } else {
@@ -1239,6 +1264,7 @@ function scheduledMain() {
     result.invoice_forwarding,
     result.reaction_forwarding,
     result.vehicle_monitoring,
+    result.rice_recovery,
     result.vehicle_linking
   ].forEach(function(phaseResult) {
     result.error_count += scheduledPhaseErrorCount_(phaseResult);
@@ -1249,6 +1275,7 @@ function scheduledMain() {
     Boolean(result.invoice_forwarding && result.invoice_forwarding.max_runtime_reached) ||
     Boolean(result.reaction_forwarding && result.reaction_forwarding.deadline_reached) ||
     Boolean(result.vehicle_monitoring && result.vehicle_monitoring.deadline_reached) ||
+    Boolean(result.rice_recovery && result.rice_recovery.deadline_reached) ||
     Boolean(result.vehicle_linking && result.vehicle_linking.deadline_reached);
   result.completed = true;
   saveScheduledRunLog_(result);
@@ -5572,6 +5599,9 @@ function testResolveVinGroups() {
   testReactionForwarding_();
   testScheduledRuntimeGuards_();
   testVehicleLinkProductionControls_();
+  if (typeof testRiceLogic === 'function') {
+    testRiceLogic();
+  }
   var parentChannelId = 'PARENT';
   var childChannels = [
     {name: 'carmore依頼', id: 'CHILD_CARMORE'},
