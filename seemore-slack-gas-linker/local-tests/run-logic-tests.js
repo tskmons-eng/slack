@@ -87,10 +87,18 @@ var context = {
   LockService: {
     getScriptLock: function() {
       return { waitLock: function() {}, tryLock: function() { return true; }, releaseLock: function() {} };
+    },
+    getUserLock: function() {
+      return { waitLock: function() {}, tryLock: function() { return true; }, releaseLock: function() {} };
     }
   },
   UrlFetchApp: {
     fetch: function() { throw new Error('テスト中は外部へ送らない（UrlFetchApp.fetch が呼ばれた）'); }
+  },
+  // 入金期日のカレンダー（Rice.gs）のテストは偽物のカレンダーを渡す。本物の CalendarApp が呼ばれたら失敗にする
+  CalendarApp: {
+    getDefaultCalendar: function() { throw new Error('テスト中は本物のカレンダーに触らない（CalendarApp.getDefaultCalendar が呼ばれた）'); },
+    getCalendarById: function() { throw new Error('テスト中は本物のカレンダーに触らない（CalendarApp.getCalendarById が呼ばれた）'); }
   }
 };
 vm.createContext(context);

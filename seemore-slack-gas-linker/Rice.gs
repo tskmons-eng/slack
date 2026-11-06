@@ -3,11 +3,13 @@
 //   署名付きでツール（https://seemore-grp.com/seikyu/api/rice-slack-events.php）へ送る。
 // - スタンプの意味（確認・完了・OK・入金完了）はツールの設定で決めるので、ここでは生のスタンプ名をそのまま送る。
 // - 1時間ごとの scheduledMain から scheduledRiceRecovery_ を呼び、直近の米チャンネルのスタンプを見直して未送信のものを送る。
+// - 同じ1時間ごとの段階の最後に riceSyncDueDatesToCalendar_ で、ツールの入金期日の一覧（rice-due-dates.php）を読み、
+//   Google カレンダー（settings の RICE_CALENDAR_ID、空なら既定のカレンダー）に終日の予定を作る・直す・消す（2026-11-06 の直し（5回目））。
 // 車案件の紐付け・🚀請求書転送・🛸振込転送には触らない（Code.gs からは2か所だけ呼ばれる）。
 // 署名は車管理と同じ方式：HMAC-SHA256(timestamp + "\n" + nonce + "\n" + eventId + "\n" + body, RICE_API_SECRET) の16進数。
 // 約束ごとの正本は 請求書作成補助/docs/rice/CONTRACT.md 5章、設定手順は docs/rice/SLACK_SETUP.md。
 
-var RICE_SETTINGS_CACHE_KEY = 'RICE_SETTINGS_V1';
+var RICE_SETTINGS_CACHE_KEY = 'RICE_SETTINGS_V2'; // V2：RICE_CALENDAR_ID を足した
 var RICE_SETTINGS_CACHE_SECONDS = 300;
 var RICE_STATE_PROPERTY_PREFIX = 'RICE_RX_';
 var RICE_BOT_USER_ID_PROPERTY = 'RICE_BOT_USER_ID';
@@ -46,7 +48,9 @@ function getRiceSettings_() {
     RICE_API_URL: raw.RICE_API_URL,
     RICE_API_SECRET: raw.RICE_API_SECRET,
     RICE_CHANNEL_IDS: raw.RICE_CHANNEL_IDS,
-    RICE_LOOKBACK_DAYS: raw.RICE_LOOKBACK_DAYS
+    RICE_LOOKBACK_DAYS: raw.RICE_LOOKBACK_DAYS,
+    RICE_CALENDAR_ID: raw.RICE_CALENDAR_ID,
+    RICE_CALENDAR_ENABLED: raw.RICE_CALENDAR_ENABLED
   };
   if (cache) {
     try {
@@ -81,10 +85,22 @@ function parseRiceSettings_(raw) {
     enabledFlag: enabledFlag,
     problems: problems,
     apiUrl: url,
+    dueDatesUrl: riceDueDatesUrl_(url),
     secret: secret,
     channels: channels,
-    lookbackDays: lookbackDays > 0 && lookbackDays <= 60 ? lookbackDays : RICE_DEFAULT_LOOKBACK_DAYS
+    lookbackDays: lookbackDays > 0 && lookbackDays <= 60 ? lookbackDays : RICE_DEFAULT_LOOKBACK_DAYS,
+    calendarId: stringValue_(raw.RICE_CALENDAR_ID).trim(), // 空なら CalendarApp.getDefaultCalendar()
+    calendarEnabled: stringValue_(raw.RICE_CALENDAR_ENABLED).trim().toLowerCase() !== 'false' // 行が無い・空なら入れる。false でカレンダーだけ止める
   };
+}
+
+// 入金期日の一覧の URL：RICE_API_URL（…/rice-slack-events.php）と同じ場所の rice-due-dates.php。
+function riceDueDatesUrl_(apiUrl) {
+  var url = stringValue_(apiUrl).trim();
+  if (/\/rice-slack-events\.php$/.test(url)) {
+    return url.replace(/rice-slack-events\.php$/, 'rice-due-dates.php');
+  }
+  return url.replace(/\/[^\/]*$/, '/rice-due-dates.php');
 }
 
 // "C0123:delivery, C0456:purchase, C0789:retail" → [{id, role}]。役割を書かなければ "reaction"（スタンプだけ送る）。
@@ -486,6 +502,8 @@ function scheduledRiceRecovery_(runtimeDeadlineMs) {
     }
     return result;
   }
+  // スタンプの拾い直しは、最後の入金期日のカレンダーのために RICE_CALENDAR_RESERVE_SECONDS だけ早めに止める
+  var recoveryDeadlineMs = runtimeDeadlineMs ? runtimeDeadlineMs - RICE_CALENDAR_RESERVE_SECONDS * 1000 : 0;
   var deps = {
     settings: riceSettings,
     botUserId: riceBotUserId_(),
@@ -496,7 +514,7 @@ function scheduledRiceRecovery_(runtimeDeadlineMs) {
       return getThreadMessages(channelId, threadTs, shouldStop);
     },
     shouldStop: function() {
-      return runtimeDeadlineReached_(runtimeDeadlineMs);
+      return runtimeDeadlineReached_(recoveryDeadlineMs);
     },
     nowMs: Date.now()
   };
@@ -523,6 +541,14 @@ function scheduledRiceRecovery_(runtimeDeadlineMs) {
   if (result.failed_count) {
     result.error_count += 1;
   }
+  // 入金期日を Google カレンダーへ（中で例外を握る。失敗しても上の拾い直し・ほかの段階は止めない）
+  var calendarDeadlineMs = Date.now() + RICE_CALENDAR_BUDGET_SECONDS * 1000;
+  if (runtimeDeadlineMs) {
+    calendarDeadlineMs = Math.min(calendarDeadlineMs, runtimeDeadlineMs);
+  }
+  result.calendar = riceSyncDueDatesToCalendarSafely_(calendarDeadlineMs, {settings: riceSettings});
+  result.error_count += result.calendar.error_count || 0;
+  result.deadline_reached = result.deadline_reached || Boolean(result.calendar.deadline_reached);
   return result;
 }
 
@@ -640,6 +666,361 @@ function ricePruneState_(nowMs) {
     }
   });
   return pruned;
+}
+
+// ---------------------------------------------------------------------------
+// 入口3：入金期日を Google カレンダーへ（2026-11-06 の直し（5回目））
+// ツールの rice-due-dates.php に署名付きで要求し（eventId は "rice-due:" で始める）、請求書ごとに期日の終日の予定を作る・直す・消す。
+// - 請求書 id → 予定 id を Script Properties の RICE_CAL_{invoiceId} に残す（二重に作らない）。
+// - 題・日付・説明が違うときだけ直す。同じ中身なら RICE_CALENDAR_RECHECK_HOURS ごとにだけ予定を見に行く（毎時の呼び出しを減らす）。
+// - 予定が人の手で消されていたら作り直さない（Properties に s='user_deleted' と残す）。void の請求書は予定を消す。
+// - 失敗は握って errors シートと結果の errors に残す（ほかの段階は止めない）。
+// ---------------------------------------------------------------------------
+
+var RICE_CALENDAR_PROPERTY_PREFIX = 'RICE_CAL_';
+var RICE_CALENDAR_BUDGET_SECONDS = 20;  // 1回の実行でカレンダーに使う時間の上限
+var RICE_CALENDAR_RESERVE_SECONDS = 10; // スタンプの拾い直しが、カレンダーのために残しておく時間
+var RICE_CALENDAR_RECHECK_HOURS = 24;   // 中身が変わらない予定を、人が直していないか見に行く間隔
+var RICE_DUE_DATES_EVENT_PREFIX = 'rice-due:';
+
+function riceYen_(value) {
+  return String(Math.round(Number(value) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function riceIsYmd_(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(stringValue_(value));
+}
+
+// "2026-11-23" → スクリプトのタイムゾーン（Asia/Tokyo）のその日の 0 時（終日の予定に渡す形）
+function riceDateFromYmd_(ymd) {
+  var parts = stringValue_(ymd).split('-');
+  return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+}
+
+function riceYmdFromDate_(date) {
+  return date ? Utilities.formatDate(date, Session.getScriptTimeZone() || 'Asia/Tokyo', 'yyyy-MM-dd') : '';
+}
+
+function riceSha256Hex_(text) {
+  return bytesToHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, stringValue_(text), Utilities.Charset.UTF_8));
+}
+
+/** ツールの1件 → 予定の題・日付・説明（と、その中身の印）。 */
+function riceCalendarEventSpec_(invoice) {
+  var total = Number(invoice.totalAmount) || 0;
+  var amountDue = invoice.amountDue === undefined || invoice.amountDue === null ? total : Number(invoice.amountDue) || 0;
+  var outstanding = Math.max(0, Number(invoice.outstanding) || 0);
+  var paid = outstanding <= 0;
+  var name = stringValue_(invoice.billingAccountName).trim() || '（不明な請求先）';
+  var title = (paid ? '【入金済】' : '【入金期日】') + name + ' ' + riceYen_(amountDue) + '円';
+  var lines = [
+    '請求書番号 ' + stringValue_(invoice.invoiceNo),
+    '期間 ' + stringValue_(invoice.periodLabel),
+    '請求額 ' + riceYen_(total) + '円'
+  ];
+  if (amountDue !== total) {
+    lines.push('今回お支払いいただく額 ' + riceYen_(amountDue) + '円（前回の入金超過分を引いた額）');
+  }
+  lines.push('未回収 ' + riceYen_(outstanding) + '円' + (paid ? '（入金済）' : ''));
+  lines.push('');
+  lines.push('米取引ツールの請求書から1時間ごとに自動で入れています。この予定を消すと、もう作り直しません。');
+  var description = lines.join('\n');
+  var date = stringValue_(invoice.dueDate);
+  return {
+    title: title,
+    date: date,
+    description: description,
+    hash: riceSha256Hex_(JSON.stringify([title, date, description])).slice(0, 32)
+  };
+}
+
+// 送る直前の形（テストで中身を確かめるため、送る処理と分ける）。本文は {}。
+function riceBuildDueDatesRequest_(riceSettings, timestamp, nonce) {
+  var body = '{}';
+  var eventId = RICE_DUE_DATES_EVENT_PREFIX + timestamp + ':' + stringValue_(nonce).slice(0, 12);
+  return {
+    url: riceSettings.dueDatesUrl || riceDueDatesUrl_(riceSettings.apiUrl),
+    body: body,
+    headers: {
+      'X-Seemore-Timestamp': timestamp,
+      'X-Seemore-Nonce': nonce,
+      'X-Seemore-Event-Id': eventId,
+      'X-Seemore-Signature': riceSignature_(timestamp, nonce, eventId, body, riceSettings.secret)
+    }
+  };
+}
+
+/** ツールから入金期日の一覧を読む。読めなければ例外（中身は errors シートへ）。 */
+function riceFetchDueDates_(riceSettings) {
+  var request = riceBuildDueDatesRequest_(riceSettings, String(Math.floor(Date.now() / 1000)), riceNewNonce_());
+  var response = UrlFetchApp.fetch(request.url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: request.body,
+    headers: request.headers,
+    muteHttpExceptions: true
+  });
+  var status = response.getResponseCode();
+  var text = response.getContentText();
+  var parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (parseError) {
+    parsed = null;
+  }
+  if (status !== 200 || !parsed || parsed.ok !== true || !Array.isArray(parsed.invoices)) {
+    var error = new Error('入金期日の一覧を読めませんでした: HTTP ' + status);
+    error.rawResponse = stringValue_(text).slice(0, 300);
+    throw error;
+  }
+  return parsed.invoices;
+}
+
+function riceOpenCalendar_(riceSettings) {
+  if (riceSettings.calendarId) {
+    var calendar = CalendarApp.getCalendarById(riceSettings.calendarId);
+    if (!calendar) {
+      throw new Error('RICE_CALENDAR_ID のカレンダーが見つかりません（ID を確かめるか、空にして既定のカレンダーを使ってください）。');
+    }
+    return calendar;
+  }
+  return CalendarApp.getDefaultCalendar();
+}
+
+// どのカレンダーに作った予定か（カレンダー ID そのものは残さず、印だけ）。
+function riceCalendarKey_(calendarId) {
+  return riceSha256Hex_(calendarId).slice(0, 12);
+}
+
+function riceCalendarPropertyStore_() {
+  var properties = PropertiesService.getScriptProperties();
+  return {
+    getAll: function() {
+      var all = properties.getProperties();
+      var states = {};
+      Object.keys(all).forEach(function(key) {
+        if (key.indexOf(RICE_CALENDAR_PROPERTY_PREFIX) !== 0) {
+          return;
+        }
+        try {
+          states[key] = JSON.parse(all[key]);
+        } catch (error) {
+          states[key] = null;
+        }
+      });
+      return states;
+    },
+    set: function(key, state) {
+      properties.setProperty(key, JSON.stringify(state));
+    },
+    remove: function(key) {
+      properties.deleteProperty(key);
+    }
+  };
+}
+
+function riceSyncDueDatesToCalendarSafely_(runtimeDeadlineMs, deps) {
+  try {
+    return riceSyncDueDatesToCalendar_(runtimeDeadlineMs, deps);
+  } catch (error) {
+    try {
+      saveError('riceCalendar', error);
+    } catch (saveFailure) {
+      Logger.log('riceCalendar: ' + (error && error.message ? error.message : error));
+    }
+    return {ok: false, error_count: 1, errors: [error && error.message ? error.message : String(error)], deadline_reached: false};
+  }
+}
+
+/**
+ * 入金期日の予定を作る・直す・消す。deps でツール・カレンダー・記録・時刻を差し替えられる（テスト用）。
+ * RICE_API_ENABLED が true でなければ何もしない。返り値は scheduled_run_logs の rice_recovery.calendar に入る。
+ */
+function riceSyncDueDatesToCalendar_(runtimeDeadlineMs, deps) {
+  deps = deps || {};
+  var riceSettings = deps.settings || getRiceSettings_();
+  var result = {
+    ok: true,
+    invoices_seen: 0,
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    unchanged: 0,
+    user_deleted: 0,
+    skipped_user_deleted: 0,
+    pruned: 0,
+    error_count: 0,
+    errors: [],
+    deadline_reached: false
+  };
+  if (!riceSettings.enabled) {
+    result.skipped = true;
+    result.reason = 'rice_disabled';
+    return result;
+  }
+  if (riceSettings.calendarEnabled === false) {
+    result.skipped = true;
+    result.reason = 'calendar_disabled';
+    return result;
+  }
+  var shouldStop = deps.shouldStop || function() {
+    return runtimeDeadlineReached_(runtimeDeadlineMs);
+  };
+  var onError = deps.onError || function(error, context) {
+    saveError('riceCalendar:' + context, error);
+  };
+  var noteError = function(context, error) {
+    result.error_count += 1;
+    if (result.errors.length < 10) {
+      result.errors.push(context + ': ' + (error && error.message ? error.message : String(error)));
+    }
+    onError(error, context);
+  };
+  // 毎時の実行と手での実行が重なっても二重に作らない（スクリプトのロックは🚀転送が使うので、ユーザーのロックを使う）
+  var lock = deps.lock || LockService.getUserLock();
+  if (!lock.tryLock(1000)) {
+    result.skipped = true;
+    result.reason = 'calendar_sync_running';
+    return result;
+  }
+  try {
+    var calendar;
+    var invoices;
+    try {
+      calendar = deps.calendar || riceOpenCalendar_(riceSettings);
+    } catch (calendarError) {
+      result.ok = false;
+      noteError('calendar', calendarError);
+      return result;
+    }
+    try {
+      invoices = (deps.fetchDueDates || riceFetchDueDates_)(riceSettings);
+    } catch (fetchError) {
+      result.ok = false;
+      noteError('due_dates', fetchError);
+      return result;
+    }
+    var store = deps.props || riceCalendarPropertyStore_();
+    var states = store.getAll();
+    var calendarKey = riceCalendarKey_(calendar.getId());
+    var nowMs = deps.nowMs || Date.now();
+    var listed = {};
+    for (var i = 0; i < invoices.length; i += 1) {
+      if (shouldStop()) {
+        result.deadline_reached = true;
+        break;
+      }
+      var invoice = invoices[i] || {};
+      var invoiceId = stringValue_(invoice.invoiceId);
+      if (!invoiceId || !riceIsYmd_(invoice.dueDate)) {
+        continue;
+      }
+      var key = RICE_CALENDAR_PROPERTY_PREFIX + invoiceId;
+      listed[key] = true;
+      result.invoices_seen += 1;
+      try {
+        riceSyncOneDueDate_(invoice, key, states[key] || null, calendar, calendarKey, store, nowMs, result);
+      } catch (error) {
+        noteError(stringValue_(invoice.invoiceNo) || invoiceId, error);
+      }
+    }
+    // void のまま一覧から外れた（void から90日たった）請求書の記録を片付ける
+    if (!result.deadline_reached) {
+      Object.keys(states).forEach(function(stateKey) {
+        if (!listed[stateKey] && states[stateKey] && states[stateKey].s === 'void') {
+          store.remove(stateKey);
+          result.pruned += 1;
+        }
+      });
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return result;
+}
+
+function riceSyncOneDueDate_(invoice, key, state, calendar, calendarKey, store, nowMs, result) {
+  if (state && state.k && state.k !== calendarKey) {
+    state = null; // RICE_CALENDAR_ID を変えた：新しいカレンダーに作る（前のカレンダーの予定はそのまま）
+  }
+  var status = stringValue_(invoice.status);
+  if (status === 'void') {
+    if (state && state.s === 'active' && state.e) {
+      var oldEvent = calendar.getEventById(state.e);
+      if (oldEvent) {
+        oldEvent.deleteEvent();
+        result.deleted += 1;
+      }
+    }
+    if (state && state.s !== 'void') {
+      store.set(key, {e: state.e || '', k: calendarKey, s: 'void', c: nowMs});
+    }
+    return;
+  }
+  if (status !== 'issued') {
+    return;
+  }
+  if (state && state.s === 'user_deleted') {
+    result.skipped_user_deleted += 1;
+    return;
+  }
+  if (state && state.s === 'void') {
+    return; // void になった請求書は元に戻らない
+  }
+  var spec = riceCalendarEventSpec_(invoice);
+  if (!state || !state.e) {
+    var created = calendar.createAllDayEvent(spec.title, riceDateFromYmd_(spec.date), {description: spec.description});
+    store.set(key, {e: created.getId(), k: calendarKey, s: 'active', h: spec.hash, c: nowMs});
+    result.created += 1;
+    return;
+  }
+  if (state.h === spec.hash && nowMs - (Number(state.c) || 0) < RICE_CALENDAR_RECHECK_HOURS * 3600 * 1000) {
+    result.unchanged += 1;
+    return;
+  }
+  var event = calendar.getEventById(state.e);
+  if (!event) {
+    // 人の手で消された：作り直さない
+    store.set(key, {e: state.e, k: calendarKey, s: 'user_deleted', h: state.h || '', c: nowMs});
+    result.user_deleted += 1;
+    return;
+  }
+  var changed = false;
+  if (stringValue_(event.getTitle()) !== spec.title) {
+    event.setTitle(spec.title);
+    changed = true;
+  }
+  if (stringValue_(event.getDescription()) !== spec.description) {
+    event.setDescription(spec.description);
+    changed = true;
+  }
+  if (!event.isAllDayEvent() || riceYmdFromDate_(event.getAllDayStartDate()) !== spec.date) {
+    event.setAllDayDate(riceDateFromYmd_(spec.date));
+    changed = true;
+  }
+  store.set(key, {e: state.e, k: calendarKey, s: 'active', h: spec.hash, c: nowMs});
+  if (changed) {
+    result.updated += 1;
+  } else {
+    result.unchanged += 1;
+  }
+}
+
+/**
+ * Apps Script の画面から手で1回動かす用（関数の一覧で選んで「実行」）。初めて動かすときに Google カレンダーの許可を求められる。
+ * RICE_API_ENABLED=true のときだけ予定を作る。結果は実行ログに出る。
+ */
+function runRiceCalendarSyncNow() {
+  // settings シートを直した直後でも今の値で動くよう、5分のキャッシュを捨てて読み直す
+  RICE_SETTINGS_MEMO_ = null;
+  try {
+    CacheService.getScriptCache().remove(RICE_SETTINGS_CACHE_KEY);
+  } catch (cacheError) {
+    // キャッシュが使えなくても動く
+  }
+  var result = riceSyncDueDatesToCalendarSafely_(Date.now() + 60 * 1000, {});
+  Logger.log('runRiceCalendarSyncNow: ' + JSON.stringify(result));
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -787,11 +1168,231 @@ function testRiceLogic() {
   assertTest_(String(handleSlackEventPayload_).indexOf('riceHandleSlackEventSafely_') !== -1, 'Slack event dispatch must hand events to Rice.gs');
   assertTest_(String(scheduledMain).indexOf('scheduledRiceRecovery_') !== -1, 'scheduledMain must include the rice recovery phase');
 
+  var calendarResult = testRiceCalendarLogic_(settings, secret);
+
   Logger.log('testRiceLogic OK');
   return {
     ok: true,
     signature: vectorSignature,
     routed_types: [added.type, removed.type, text.type],
-    recovery_sent: storeResult.sent_count + purchaseResult.sent_count
+    recovery_sent: storeResult.sent_count + purchaseResult.sent_count,
+    calendar: calendarResult
   };
+}
+
+// 入金期日の Google カレンダー（CalendarApp・UrlFetchApp は偽物。本物のカレンダー・ツールには触らない）
+function testRiceCalendarLogic_(settings, secret) {
+  // 要求の形と署名（ツール側 tests/rice-slack-check.php の 34 と同じ値）
+  assertTest_(settings.dueDatesUrl === 'https://seikyu.test/api/rice-due-dates.php', 'due dates url must sit next to rice-slack-events.php: ' + settings.dueDatesUrl);
+  assertTest_(riceDueDatesUrl_('https://seikyu.test/api/other.php') === 'https://seikyu.test/api/rice-due-dates.php', 'due dates url must fall back to the same folder');
+  var dueRequest = riceBuildDueDatesRequest_(settings, '1762300000', 'abcdef0123456789abcdef0123456789');
+  assertTest_(dueRequest.body === '{}' && dueRequest.headers['X-Seemore-Event-Id'] === 'rice-due:1762300000:abcdef012345', 'due dates request must post {} with a rice-due: event id');
+  assertTest_(dueRequest.headers['X-Seemore-Signature'] === 'bab961b8eae9902ed528075be8d8e4112ad3f6b0ca75b4800eb604226df3a1e9', 'due dates signature must match the PHP implementation: ' + dueRequest.headers['X-Seemore-Signature']);
+  assertTest_(dueRequest.headers['X-Seemore-Signature'] === riceSignature_('1762300000', 'abcdef0123456789abcdef0123456789', 'rice-due:1762300000:abcdef012345', '{}', secret), 'due dates signature must cover timestamp, nonce, event id and body');
+  assertTest_(riceYmdFromDate_(riceDateFromYmd_('2026-11-23')) === '2026-11-23', 'all-day date must round-trip in the script time zone');
+  assertTest_(riceYen_(1234567) === '1,234,567' && riceYen_(0) === '0', 'yen must use thousands separators');
+
+  // 偽物のカレンダー
+  var makeCalendar = function(calendarId) {
+    var calendar = {events: {}, seq: 0, calls: {create: 0, get: 0, set: 0, del: 0}, failCreateFor: ''};
+    calendar.getId = function() { return calendarId; };
+    calendar.getEventById = function(id) {
+      calendar.calls.get += 1;
+      return calendar.events[id] || null;
+    };
+    calendar.createAllDayEvent = function(title, date, options) {
+      calendar.calls.create += 1;
+      if (calendar.failCreateFor && title.indexOf(calendar.failCreateFor) !== -1) {
+        throw new Error('Calendar の一時的な失敗');
+      }
+      calendar.seq += 1;
+      var id = calendarId + '-ev' + calendar.seq + '@google.com';
+      var event = {title: title, date: date, allDay: true, description: (options && options.description) || ''};
+      event.getId = function() { return id; };
+      event.getTitle = function() { return event.title; };
+      event.setTitle = function(value) { calendar.calls.set += 1; event.title = value; };
+      event.getDescription = function() { return event.description; };
+      event.setDescription = function(value) { calendar.calls.set += 1; event.description = value; };
+      event.isAllDayEvent = function() { return event.allDay; };
+      event.getAllDayStartDate = function() { return event.date; };
+      event.setAllDayDate = function(value) { calendar.calls.set += 1; event.date = value; event.allDay = true; };
+      event.deleteEvent = function() { calendar.calls.del += 1; delete calendar.events[id]; };
+      calendar.events[id] = event;
+      return event;
+    };
+    calendar.list = function() {
+      return Object.keys(calendar.events).map(function(id) { return calendar.events[id]; });
+    };
+    return calendar;
+  };
+  var memory = {};
+  var props = {
+    getAll: function() {
+      var out = {};
+      Object.keys(memory).forEach(function(key) { out[key] = JSON.parse(memory[key]); });
+      return out;
+    },
+    set: function(key, state) { memory[key] = JSON.stringify(state); },
+    remove: function(key) { delete memory[key]; }
+  };
+  var lockCalls = {tried: 0, released: 0, deny: false};
+  var lock = {
+    tryLock: function() { lockCalls.tried += 1; return !lockCalls.deny; },
+    releaseLock: function() { lockCalls.released += 1; }
+  };
+  var calendar = makeCalendar('primary-test');
+  var list = [];
+  var errors = [];
+  var hour = 3600 * 1000;
+  var nowMs = Date.UTC(2026, 10, 6, 1, 0, 0);
+  var sync = function(extra) {
+    return riceSyncDueDatesToCalendar_(0, Object.assign({
+      settings: settings,
+      calendar: calendar,
+      fetchDueDates: function() { return JSON.parse(JSON.stringify(list)); },
+      props: props,
+      lock: lock,
+      nowMs: nowMs,
+      shouldStop: function() { return false; },
+      onError: function(error, context) { errors.push(context + ': ' + error.message); }
+    }, extra || {}));
+  };
+  var invoice = function(id, no, due, total, amountDue, outstanding, status) {
+    return {invoiceId: id, invoiceNo: no, billingAccountName: '期日テスト商店', periodLabel: '2026-11 前半', dueDate: due, totalAmount: total, amountDue: amountDue, outstanding: outstanding, status: status || 'issued'};
+  };
+  var eventFor = function(invoiceId) {
+    var state = memory[RICE_CALENDAR_PROPERTY_PREFIX + invoiceId] ? JSON.parse(memory[RICE_CALENDAR_PROPERTY_PREFIX + invoiceId]) : null;
+    return state ? calendar.events[state.e] || null : null;
+  };
+  var stateFor = function(invoiceId) {
+    var raw = memory[RICE_CALENDAR_PROPERTY_PREFIX + invoiceId];
+    return raw ? JSON.parse(raw) : null;
+  };
+
+  // 作る（未入金・満額入金・前受けあり）。期日の無いもの・知らない状態は作らない
+  list = [
+    invoice('inv-a', 'RI-A', '2026-11-23', 120000, 120000, 120000),
+    invoice('inv-b', 'RI-B', '2026-12-08', 80000, 75000, 60000),
+    invoice('inv-c', 'RI-C', '2026-11-08', 30000, 30000, 0),
+    invoice('inv-n', 'RI-N', '', 10000, 10000, 10000)
+  ];
+  var first = sync();
+  assertTest_(first.ok && first.created === 3 && first.invoices_seen === 3 && first.error_count === 0, 'calendar sync must create one all-day event per invoice with a due date: ' + JSON.stringify(first));
+  var eventA = eventFor('inv-a');
+  assertTest_(eventA && eventA.title === '【入金期日】期日テスト商店 120,000円', 'unpaid event title must show the name and the amount to pay: ' + (eventA && eventA.title));
+  assertTest_(eventA.allDay && riceYmdFromDate_(eventA.date) === '2026-11-23', 'event must be an all-day event on the due date');
+  assertTest_(eventA.description.indexOf('請求書番号 RI-A') === 0 && eventA.description.indexOf('期間 2026-11 前半') !== -1 && eventA.description.indexOf('請求額 120,000円') !== -1 && eventA.description.indexOf('未回収 120,000円') !== -1, 'event description must carry invoice no, period, total and outstanding: ' + eventA.description);
+  assertTest_(eventFor('inv-c').title === '【入金済】期日テスト商店 30,000円' && eventFor('inv-c').description.indexOf('未回収 0円（入金済）') !== -1, 'fully paid invoice must be titled 【入金済】');
+  assertTest_(eventFor('inv-b').title === '【入金期日】期日テスト商店 75,000円' && eventFor('inv-b').description.indexOf('今回お支払いいただく額 75,000円') !== -1 && eventFor('inv-b').description.indexOf('未回収 60,000円') !== -1, 'carried credit must reduce the title amount and show in the description');
+  assertTest_(stateFor('inv-n') === null && calendar.list().length === 3, 'invoices without a due date must not get an event');
+  assertTest_(lockCalls.tried === 1 && lockCalls.released === 1, 'calendar sync must take and release the lock');
+
+  // 二重に作らない（同じ中身なら予定を見にも行かない）
+  var callsBefore = JSON.stringify(calendar.calls);
+  nowMs += hour;
+  var second = sync();
+  assertTest_(second.created === 0 && second.unchanged === 3 && calendar.list().length === 3, 'second sync must not create duplicates: ' + JSON.stringify(second));
+  assertTest_(JSON.stringify(calendar.calls) === callsBefore, 'unchanged invoices must not touch the calendar within the recheck window');
+
+  // 直す：一部入金（説明だけ変わる）→ 満額入金（【入金済】になる）
+  list[0].outstanding = 20000;
+  nowMs += hour;
+  var partial = sync();
+  assertTest_(partial.updated === 1 && partial.created === 0 && eventFor('inv-a').title === '【入金期日】期日テスト商店 120,000円' && eventFor('inv-a').description.indexOf('未回収 20,000円') !== -1, 'partial payment must update only the description: ' + JSON.stringify(partial));
+  list[0].outstanding = 0;
+  nowMs += hour;
+  var paid = sync();
+  assertTest_(paid.updated === 1 && eventFor('inv-a').title === '【入金済】期日テスト商店 120,000円' && eventFor('inv-a').description.indexOf('未回収 0円（入金済）') !== -1, 'full payment must turn the event into 【入金済】');
+  assertTest_(calendar.list().length === 3, 'updates must not create new events');
+
+  // 人が題を書き換えた・日付を動かした → 1日ごとの見直しで元に戻す。同じ中身なら直さない
+  eventFor('inv-c').title = '手で書き換えた題';
+  eventFor('inv-b').date = riceDateFromYmd_('2026-12-20');
+  nowMs += RICE_CALENDAR_RECHECK_HOURS * hour + 1;
+  var setsBefore = calendar.calls.set;
+  var recheck = sync();
+  assertTest_(recheck.updated === 2 && recheck.unchanged === 1 && eventFor('inv-c').title === '【入金済】期日テスト商店 30,000円' && riceYmdFromDate_(eventFor('inv-b').date) === '2026-12-08', 'daily recheck must restore edited title and date only where they differ: ' + JSON.stringify(recheck));
+  assertTest_(calendar.calls.set === setsBefore + 2, 'only the differing fields must be written');
+
+  // 人の手で消された予定は作り直さない
+  var deletedId = stateFor('inv-b').e;
+  delete calendar.events[deletedId];
+  list[1].outstanding = 10000; // 中身が変わって見に行く
+  nowMs += hour;
+  var gone = sync();
+  assertTest_(gone.user_deleted === 1 && gone.created === 0 && stateFor('inv-b').s === 'user_deleted' && !calendar.events[deletedId], 'event deleted by a person must be recorded and not recreated: ' + JSON.stringify(gone));
+  list[1].outstanding = 0;
+  nowMs += RICE_CALENDAR_RECHECK_HOURS * hour + 1;
+  var stillGone = sync();
+  assertTest_(stillGone.created === 0 && stillGone.skipped_user_deleted === 1 && calendar.list().length === 2, 'deleted-by-person events must stay deleted on later runs');
+
+  // void は予定を消す（そのあとは何もしない）。void のまま一覧から外れたら記録を片付ける
+  list.push(invoice('inv-d', 'RI-D', '2026-12-23', 50000, 50000, 50000));
+  nowMs += hour;
+  assertTest_(sync().created === 1 && eventFor('inv-d') !== null, 'new invoice must get an event');
+  var eventIdD = stateFor('inv-d').e;
+  list[4].status = 'void';
+  nowMs += hour;
+  var voided = sync();
+  assertTest_(voided.deleted === 1 && !calendar.events[eventIdD] && stateFor('inv-d').s === 'void', 'void invoice must delete its event: ' + JSON.stringify(voided));
+  var delBefore = calendar.calls.del;
+  nowMs += hour;
+  var voidAgain = sync();
+  assertTest_(voidAgain.deleted === 0 && voidAgain.created === 0 && calendar.calls.del === delBefore, 'void invoice must not be deleted or created twice');
+  list.push(invoice('inv-e', 'RI-E', '2026-10-23', 40000, 40000, 40000, 'void'));
+  nowMs += hour;
+  assertTest_(sync().created === 0 && stateFor('inv-e') === null, 'void invoice never seen before must not create anything');
+  list.splice(4, 1); // inv-d が一覧から外れた（void から90日）
+  nowMs += hour;
+  var pruned = sync();
+  assertTest_(pruned.pruned === 1 && stateFor('inv-d') === null && stateFor('inv-b').s === 'user_deleted', 'void records must be pruned once the tool stops listing them (deleted-by-person records stay)');
+
+  // 1件の失敗はほかの請求書を止めない・次の回に作り直す
+  list.push(invoice('inv-f', 'RI-F', '2026-12-25', 1000, 1000, 1000));
+  list.push(invoice('inv-g', 'RI-G', '2026-12-26', 2000, 2000, 2000));
+  calendar.failCreateFor = '1,000円';
+  errors = [];
+  nowMs += hour;
+  var partialFail = sync();
+  assertTest_(partialFail.error_count === 1 && partialFail.created === 1 && stateFor('inv-f') === null && stateFor('inv-g') !== null && errors.length === 1 && partialFail.errors[0].indexOf('RI-F') === 0, 'one failing invoice must be reported and must not stop the others: ' + JSON.stringify(partialFail));
+  calendar.failCreateFor = '';
+  nowMs += hour;
+  assertTest_(sync().created === 1 && stateFor('inv-f') !== null, 'failed invoice must be created on the next run');
+
+  // ツールから読めない・カレンダーが開けない → 例外にせず errors に残す
+  errors = [];
+  var fetchFail = sync({fetchDueDates: function() { throw new Error('入金期日の一覧を読めませんでした: HTTP 401'); }});
+  assertTest_(fetchFail.ok === false && fetchFail.error_count === 1 && fetchFail.errors[0].indexOf('due_dates: ') === 0 && errors.length === 1, 'fetch failures must be captured, not thrown: ' + JSON.stringify(fetchFail));
+  var safe = riceSyncDueDatesToCalendarSafely_(0, {settings: settings, lock: lock, calendar: calendar, props: props, fetchDueDates: function() { return null; }, onError: function() {}});
+  assertTest_(safe.ok === false && safe.error_count === 1, 'unexpected errors must be captured by the safe wrapper: ' + JSON.stringify(safe));
+  assertTest_(lockCalls.tried === lockCalls.released, 'the lock must always be released');
+
+  // カレンダーを変えた（RICE_CALENDAR_ID）→ 新しいカレンダーに作る
+  var otherCalendar = makeCalendar('rice-other-test');
+  nowMs += hour;
+  var moved = sync({calendar: otherCalendar});
+  assertTest_(moved.created === otherCalendar.list().length && moved.created === 5 && moved.skipped_user_deleted === 0, 'changing the calendar must create the events in the new calendar: ' + JSON.stringify(moved));
+
+  // 止める条件：RICE_API_ENABLED=false・時間切れ・ほかの実行が動いている
+  var disabledSettings = parseRiceSettings_({RICE_API_ENABLED: 'false', RICE_API_SECRET: secret, RICE_CHANNEL_IDS: 'C0DELIV'});
+  var offResult = sync({settings: disabledSettings, fetchDueDates: function() { throw new Error('呼んではいけない'); }});
+  assertTest_(offResult.skipped === true && offResult.reason === 'rice_disabled' && offResult.error_count === 0, 'calendar sync must do nothing while RICE_API_ENABLED is not true');
+  var calendarOff = parseRiceSettings_({RICE_API_ENABLED: 'true', RICE_API_URL: 'https://seikyu.test/api/rice-slack-events.php', RICE_API_SECRET: secret, RICE_CHANNEL_IDS: 'C0DELIV', RICE_CALENDAR_ENABLED: 'FALSE'});
+  var calendarOffResult = sync({settings: calendarOff, fetchDueDates: function() { throw new Error('呼んではいけない'); }});
+  assertTest_(calendarOff.enabled === true && calendarOffResult.skipped === true && calendarOffResult.reason === 'calendar_disabled', 'RICE_CALENDAR_ENABLED=false must stop only the calendar sync');
+  assertTest_(settings.calendarEnabled === true, 'calendar sync must be on when RICE_CALENDAR_ENABLED is missing');
+  var stopCalendar = makeCalendar('rice-stop-test');
+  var stopped = sync({calendar: stopCalendar, shouldStop: function() { return true; }});
+  assertTest_(stopped.deadline_reached === true && stopCalendar.calls.create === 0, 'calendar sync must stop at the runtime budget');
+  lockCalls.deny = true;
+  var locked = sync({calendar: stopCalendar});
+  lockCalls.deny = false;
+  assertTest_(locked.skipped === true && locked.reason === 'calendar_sync_running' && stopCalendar.calls.create === 0, 'calendar sync must skip when another run holds the lock');
+
+  // 1時間ごとの拾い直し（rice_recovery の段階）から呼ばれる
+  assertTest_(String(scheduledRiceRecovery_).indexOf('riceSyncDueDatesToCalendarSafely_') !== -1, 'scheduledRiceRecovery_ must run the calendar sync');
+  assertTest_(String(scheduledRiceRecovery_).indexOf('RICE_CALENDAR_RESERVE_SECONDS') !== -1 && String(scheduledRiceRecovery_).indexOf('RICE_CALENDAR_BUDGET_SECONDS') !== -1, 'calendar sync must have its own time budget inside rice_recovery');
+  assertTest_(parseRiceSettings_({RICE_CALENDAR_ID: ' cal@example.test '}).calendarId === 'cal@example.test' && parseRiceSettings_({}).calendarId === '', 'RICE_CALENDAR_ID must be read (blank means the default calendar)');
+
+  return {created: calendar.list().length, moved: moved.created};
 }
