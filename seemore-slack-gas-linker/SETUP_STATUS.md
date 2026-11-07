@@ -1,6 +1,14 @@
 # SEEMORE Slack GAS Linker Setup Status
 
-Last updated: 2026-08-15 17:11 JST
+Last updated: 2026-11-08 03:25 JST
+
+## 2026-11-08 米取引の入金期日を Google カレンダーに入れる（版 82）
+
+- ソースは `claude/rice-integration` の `58d30c3`（Rice.gs の `riceSyncDueDatesToCalendar_`、appsscript.json に `https://www.googleapis.com/auth/calendar` を追加）。ツール側の `rice-due-dates.php` は本番で POST 401・GET 405（出ている）。ローカルの `testResolveVinGroups`・`testRiceLogic` は [ok]（calendar を含む）。
+- 02:26 JST に clasp push（毎時17分の実行と重ならない時刻）。直後にユーザー様が Apps Script の画面で `runRiceCalendarSyncNow` を実行してカレンダーの権限を許可。結果は ok=true、invoices_seen=4、created=3、error_count=0（4件のうち1件は無効にした試験の請求書なので予定を作らない。発行済み3件と一致）。
+- `RICE_CALENDAR_ID` の行は足していない（空＝ボットを動かしているアカウントのメインのカレンダー）。
+- 版 82 を作り、Slack Events 用 Web アプリと API 実行用の両方のデプロイを 82 に更新。
+- 許可のあとの最初の毎時の実行（03:17 JST）で、ツールに期日の一覧の問い合わせが届いた（毎時のトリガーは権限で止まっていない）。
 
 ## 2026-11-06 米取引を無効状態で公開
 
