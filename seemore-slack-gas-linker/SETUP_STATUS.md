@@ -2,6 +2,13 @@
 
 Last updated: 2026-08-15 17:11 JST
 
+## 2026-11-06 米取引を無効状態で公開
+
+- ソースは `claude/rice-integration` の `c50f907`。Apps Script の更新前ソースとバージョン 80 がブランチの親と一致することを確認。バージョン 81 に `Code.gs`、`Rice.gs`、`appsscript.json` があり、Slack Events 用 Web アプリと API 実行用の両方を 81 に更新。
+- ローカルの `testResolveVinGroups` と `testRiceLogic`、公開先の `test_logic` は成功。
+- `RICE_API_ENABLED=false`。01:05:58 の手動実行は完了、米側 `rice_recovery.enabled=false`・エラー 0。全体のエラーは 1 件で、既存の車管理 API へのタイムアウト。11/2、11/4 にも同じ記録あり。
+- 公開後の診断は毎時トリガー 1、転送元 6、未解決の転送元・転送先および無効な転送ルート 0。最初の自動実行は 01:17:37〜01:18:00 JST、completed=true、error_count=0。請求転送・車案件紐付けの新規投稿は 0 件。
+
 ## 2026-08-15 Hoped-number routing expansion
 
 - Confirmed the live private channel `依頼_希望ナンバー申請` (`C0APRNPHCAK`) and Bot membership before changing production settings.
